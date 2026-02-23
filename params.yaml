@@ -1,0 +1,55 @@
+# Hiperparámetros versionados del modelo
+# Cambiar estos valores y hacer commit genera un nuevo experimento en MLflow
+
+data:
+  test_size: 0.2
+  random_state: 42
+  target_column: Churn
+
+features:
+  numeric:
+    - tenure
+    - MonthlyCharges
+    - TotalCharges
+  categorical:
+    - gender
+    - SeniorCitizen
+    - Partner
+    - Dependents
+    - PhoneService
+    - MultipleLines
+    - InternetService
+    - OnlineSecurity
+    - OnlineBackup
+    - DeviceProtection
+    - TechSupport
+    - StreamingTV
+    - StreamingMovies
+    - Contract
+    - PaperlessBilling
+    - PaymentMethod
+
+models:
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    random_state: 42
+
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
+    min_samples_split: 5
+    random_state: 42
+
+  xgboost:
+    n_estimators: 200
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    random_state: 42
+
+thresholds:
+  min_auc: 0.80
+  min_f1: 0.72
+  min_recall: 0.75
+  drift_psi: 0.10

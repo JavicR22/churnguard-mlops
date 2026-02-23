@@ -1,0 +1,74 @@
+name: CI — Tests & Linting
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Tests & Code Quality
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: mlflow
+          POSTGRES_PASSWORD: mlflow123
+          POSTGRES_DB: mlflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install flake8 black
+
+      - name: Linting con flake8
+        run: |
+          flake8 src/ api/ tests/ \
+            --max-line-length=100 \
+            --exclude=__pycache__ \
+            --ignore=E203,W503
+
+      - name: Verificar formato con black
+        run: |
+          black --check --line-length=100 src/ api/ tests/
+
+      - name: Ejecutar tests unitarios
+        env:
+          MLFLOW_TRACKING_URI: sqlite:///test_mlflow.db
+          API_KEY: test-key
+          MODEL_STAGE: None
+        run: |
+          pytest tests/ \
+            --cov=src \
+            --cov=api \
+            --cov-report=term-missing \
+            --cov-fail-under=75 \
+            -v
+
+      - name: Upload cobertura a GitHub
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: htmlcov/
