@@ -24,7 +24,8 @@ env/
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !models/.gitkeep
-
+!data/raw/*.dvc
+!data/raw/.gitkeep
 # MLflow
 mlruns/
 mlartifacts/
