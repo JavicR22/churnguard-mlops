@@ -1,0 +1,54 @@
+schema: '2.0'
+stages:
+  data_prep:
+    cmd: python src/data_prep.py
+    deps:
+    - path: data/raw/WA_Fn-UseC_-Telco-Customer-Churn.csv
+      hash: md5
+      md5: 0f9de68e012bd3aed5fa7cdc9fc421af
+      size: 977501
+    - path: src/data_prep.py
+      hash: md5
+      md5: 2ca899806cecea474874e63dfc89f3a4
+      size: 5458
+    params:
+      params.yaml:
+        data:
+          test_size: 0.2
+          random_state: 42
+          target_column: Churn
+        features:
+          numeric:
+          - tenure
+          - MonthlyCharges
+          - TotalCharges
+          categorical:
+          - gender
+          - SeniorCitizen
+          - Partner
+          - Dependents
+          - PhoneService
+          - MultipleLines
+          - InternetService
+          - OnlineSecurity
+          - OnlineBackup
+          - DeviceProtection
+          - TechSupport
+          - StreamingTV
+          - StreamingMovies
+          - Contract
+          - PaperlessBilling
+          - PaymentMethod
+    outs:
+    - path: data/processed/feature_names.json
+      hash: md5
+      md5: c485a5814d77277ea9aab86234c8b133
+      size: 1193
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: 312ffe845f100665116f01c26ed4bd24
+      size: 57448
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 3f2214e4584e080eb0abd56caefc17f7
+      size: 157963
