@@ -1,7 +1,26 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# ChurnGuard MLOps — Docker Compose (producción)
+#
+# Servicios:
+#   postgres  → Backend de MLflow (metadatos de experimentos)
+#   mlflow    → MLflow Tracking Server + Model Registry (UI en :5000)
+#   api       → ChurnGuard FastAPI (UI + predicciones en :8000)
+#
+# Inicio rápido:
+#   cp .env.example .env   # configura tus credenciales
+#   docker-compose up -d
+#
+# Para desarrollo con hot-reload:
+#   docker-compose -f docker-compose.yml -f docker-compose.override.yml up
+# ══════════════════════════════════════════════════════════════════════════════
+
 services:
+
+  # ── PostgreSQL: backend de metadatos para MLflow ───────────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: churnguard-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mlflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlflow123}
@@ -9,63 +28,92 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - churnguard-net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mlflow"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlflow} -d ${POSTGRES_DB:-mlflow}"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
+  # ── MLflow Tracking Server ─────────────────────────────────────────────────
   mlflow:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
     container_name: churnguard-mlflow
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     volumes:
       - mlflow_artifacts:/mlartifacts
     ports:
-      - "5000:5000"
+      - "${MLFLOW_PORT:-5000}:5000"
+    networks:
+      - churnguard-net
     command: >
-      /usr/local/bin/mlflow server
+      mlflow server
       --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow123}@postgres:5432/${POSTGRES_DB:-mlflow}
       --default-artifact-root /mlartifacts
       --host 0.0.0.0
       --port 5000
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:5000/health || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 8
-      start_period: 45s
+      start_period: 60s
+
+  # ── ChurnGuard API ─────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: Dockerfile
+      # Usar imagen pre-construida en producción:
+      # image: ghcr.io/tu-usuario/churnguard-mlops:latest
     container_name: churnguard-api
+    restart: unless-stopped
+    # La API arranca independientemente de MLflow (tiene fallback a modelo local).
+    # Si quieres forzar que espere a MLflow, cambia a: condition: service_healthy
     depends_on:
       mlflow:
-        condition: service_healthy
+        condition: service_started
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODEL_NAME: ${MODEL_NAME:-churn-prediction-model}
       MODEL_STAGE: ${MODEL_STAGE:-Production}
       API_KEY: ${API_KEY:-dev-key-change-in-production}
       DATABASE_URL: postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow123}@postgres:5432/${POSTGRES_DB:-mlflow}
+      WORKERS: ${WORKERS:-2}
     volumes:
-      - ./models:/app/models
-      - ./data/processed:/app/data/processed
+      # Montar artefactos como volúmenes permite actualizarlos sin rebuild
+      - ./models:/app/models:ro
+      - ./data/processed:/app/data/processed:ro
+      - ./reports:/app/reports:ro
       - ./monitoring/reports:/app/monitoring/reports
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
+    networks:
+      - churnguard-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 30s
 
+# ── Redes ──────────────────────────────────────────────────────────────────────
+networks:
+  churnguard-net:
+    name: churnguard-network
+    driver: bridge
+
+# ── Volúmenes persistentes ─────────────────────────────────────────────────────
 volumes:
   postgres_data:
+    name: churnguard-postgres-data
   mlflow_artifacts:
+    name: churnguard-mlflow-artifacts

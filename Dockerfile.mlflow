@@ -1,4 +1,11 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# ChurnGuard — MLflow Tracking Server
+# Versión de MLflow sincronizada con requirements.txt
+# ══════════════════════════════════════════════════════════════════════════════
 FROM python:3.11-slim
+
+LABEL org.opencontainers.image.title="ChurnGuard MLflow Server" \
+      org.opencontainers.image.description="MLflow Tracking Server for ChurnGuard MLOps"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -6,8 +13,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     && rm -rf /var/lib/apt/lists/*
 
+# Versión exacta sincronizada con requirements.txt
 RUN pip install --no-cache-dir \
-    mlflow==2.8.0 \
+    mlflow==2.13.0 \
     psycopg2-binary==2.9.9
 
+# Usuario no-root
+RUN useradd --create-home --shell /bin/bash --uid 1001 mlflowuser
+USER mlflowuser
+
 EXPOSE 5000
+
+HEALTHCHECK --interval=20s --timeout=10s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:5000/health || exit 1

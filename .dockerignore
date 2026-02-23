@@ -1,0 +1,67 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# ── Entornos virtuales ────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env
+.env.*
+!.env.example
+
+# ── DVC ───────────────────────────────────────────────────────────────────────
+# El cache DVC puede ser de varios GB — no incluir en la imagen
+.dvc/cache/
+.dvc/tmp/
+# Los .dvc pointer files sí pueden incluirse (son solo metadatos)
+
+# ── Datos crudos ──────────────────────────────────────────────────────────────
+# El CSV Kaggle es ~1 MB y no es necesario en la imagen de producción
+data/raw/*.csv
+
+# ── Desarrollo y tests ────────────────────────────────────────────────────────
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+*.ipynb
+.ipynb_checkpoints/
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── CI/CD ────────────────────────────────────────────────────────────────────
+.github/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+.docker/
+docker-compose.override.yml
+
+# ── MLflow artifacts locales ──────────────────────────────────────────────────
+mlruns/
+mlartifacts/
+*.db
+
+# ── IDEs ─────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Documentación ─────────────────────────────────────────────────────────────
+*.md
+docs/

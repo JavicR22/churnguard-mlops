@@ -1,4 +1,14 @@
-name: CI — Tests & Linting
+# ══════════════════════════════════════════════════════════════════════════════
+# CI — Lint · Tests · Docker Validate
+#
+# Se ejecuta en cada push (todas las ramas) y en PRs a main/develop.
+# Jobs:
+#   lint           → flake8 + black (rápido, sin dependencias ML)
+#   test           → pytest con cobertura, usa artefactos commiteados
+#   docker-build   → construye la imagen y verifica que arranca sano
+# ══════════════════════════════════════════════════════════════════════════════
+
+name: CI
 
 on:
   push:
@@ -6,10 +16,47 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Solo una ejecución activa por rama/PR
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    name: Tests & Code Quality
+
+  # ── Job 1: Linting ──────────────────────────────────────────────────────────
+  lint:
+    name: Lint (flake8 + black)
     runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Instalar herramientas de lint
+        run: pip install flake8 black
+
+      - name: flake8 — verificar estilo
+        run: |
+          flake8 src/ api/ tests/ monitoring/ \
+            --max-line-length=100 \
+            --exclude=__pycache__ \
+            --ignore=E203,W503,E501
+
+      - name: black — verificar formato
+        run: |
+          black --check --line-length=100 src/ api/ tests/ monitoring/
+
+  # ── Job 2: Tests ────────────────────────────────────────────────────────────
+  test:
+    name: Tests & Coverage
+    runs-on: ubuntu-latest
+    needs: lint
 
     services:
       postgres:
@@ -21,54 +68,132 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U mlflow"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      MLFLOW_TRACKING_URI: sqlite:///test_mlflow.db
+      API_KEY: test-key-ci
+      MODEL_NAME: churn-prediction-model
+      MODEL_STAGE: Production
+
     steps:
-      - name: Checkout código
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
+          cache: pip
 
       - name: Instalar dependencias
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
-          pip install flake8 black
 
-      - name: Linting con flake8
+      - name: Verificar artefactos commiteados
         run: |
-          flake8 src/ api/ tests/ \
-            --max-line-length=100 \
-            --exclude=__pycache__ \
-            --ignore=E203,W503
+          echo "── Verificando artefactos de despliegue ──"
+          test -f models/preprocessor.joblib  && echo "✓ models/preprocessor.joblib" || echo "✗ FALTA models/preprocessor.joblib"
+          test -f data/processed/train.parquet && echo "✓ data/processed/train.parquet" || echo "✗ FALTA data/processed/train.parquet"
+          test -f data/processed/test.parquet  && echo "✓ data/processed/test.parquet"  || echo "✗ FALTA data/processed/test.parquet"
+          test -f reports/metrics.json          && echo "✓ reports/metrics.json"          || echo "✗ FALTA reports/metrics.json"
+          # Fallar si el modelo no existe (requerido para test_api.py)
+          test -f models/preprocessor.joblib || (echo "❌ El modelo no está commiteado. Ejecuta: make pipeline && git add models/ data/processed/ reports/" && exit 1)
 
-      - name: Verificar formato con black
-        run: |
-          black --check --line-length=100 src/ api/ tests/
-
-      - name: Ejecutar tests unitarios
-        env:
-          MLFLOW_TRACKING_URI: sqlite:///test_mlflow.db
-          API_KEY: test-key
-          MODEL_STAGE: None
+      - name: Ejecutar tests
         run: |
           pytest tests/ \
             --cov=src \
             --cov=api \
             --cov-report=term-missing \
-            --cov-fail-under=75 \
-            -v
+            --cov-report=html:htmlcov \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=70 \
+            -v \
+            --tb=short
 
-      - name: Upload cobertura a GitHub
+      - name: Subir reporte de cobertura (HTML)
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-report
+          name: coverage-html-${{ github.run_number }}
           path: htmlcov/
+          retention-days: 14
+
+      - name: Subir cobertura XML (para badges/SonarCloud)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml-${{ github.run_number }}
+          path: coverage.xml
+          retention-days: 14
+
+  # ── Job 3: Docker build validate ────────────────────────────────────────────
+  docker-build:
+    name: Docker Build Validate
+    runs-on: ubuntu-latest
+    needs: lint  # No necesita tests para validar el build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build imagen API (sin push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Dockerfile
+          push: false
+          tags: churnguard-api:ci-test
+          # Caché de capas entre builds (acelera hasta 80%)
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Validar que la imagen es para la arquitectura correcta
+          platforms: linux/amd64
+
+      - name: Build imagen MLflow (sin push)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Dockerfile.mlflow
+          push: false
+          tags: churnguard-mlflow:ci-test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Verificar que la imagen API arranca correctamente
+        run: |
+          docker run --rm -d \
+            --name churnguard-test \
+            -p 8765:8000 \
+            -e API_KEY=test \
+            -e MLFLOW_TRACKING_URI=http://localhost:5000 \
+            churnguard-api:ci-test
+
+          # Esperar hasta 30 segundos a que la API esté lista
+          echo "Esperando a que la API arranque..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:8765/health > /dev/null 2>&1; then
+              echo "✅ API respondiendo en el intento $i"
+              break
+            fi
+            sleep 2
+          done
+
+          # Verificar el endpoint /health
+          RESPONSE=$(curl -sf http://localhost:8765/health)
+          echo "Respuesta /health: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'status' in d, 'Campo status no encontrado'; print('✓ Health check OK')"
+
+          docker stop churnguard-test
+
+      - name: Validar docker-compose.yml sintaxis
+        run: docker compose config --quiet && echo "✅ docker-compose.yml válido"

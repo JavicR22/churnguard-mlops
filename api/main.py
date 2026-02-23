@@ -1,0 +1,1071 @@
+"""
+main.py
+-------
+FastAPI app de ChurnGuard.
+Sirve predicciones de churn + dashboard de monitoreo con interfaz moderna.
+"""
+
+import json
+import logging
+import os
+import time
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+import joblib
+import mlflow
+import mlflow.sklearn
+import numpy as np
+import pandas as pd
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import APIKeyHeader
+
+from api.schemas import (
+    BatchPredictionRequest,
+    BatchPredictionResponse,
+    CustomerFeatures,
+    DriftSummary,
+    HealthResponse,
+    MetricsResponse,
+    ModelInfoResponse,
+    PredictionResponse,
+    RiskLevel,
+)
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger(__name__)
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+ROOT = Path(__file__).parent.parent
+MODELS_DIR = ROOT / "models"
+DATA_PROCESSED = ROOT / "data" / "processed"
+REPORTS_DIR = ROOT / "reports"
+MONITORING_DIR = ROOT / "monitoring" / "reports"
+
+# ── Config ────────────────────────────────────────────────────────────────────
+MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+MODEL_NAME = os.getenv("MODEL_NAME", "churn-prediction-model")
+MODEL_STAGE = os.getenv("MODEL_STAGE", "Production")
+API_KEY_VALUE = os.getenv("API_KEY", "dev-key-change-in-production")
+
+# ── Services const ────────────────────────────────────────────────────────────
+_SERVICE_COLS = [
+    "PhoneService", "MultipleLines", "InternetService",
+    "OnlineSecurity", "OnlineBackup", "DeviceProtection",
+    "TechSupport", "StreamingTV", "StreamingMovies",
+]
+_NO_VALUES = {"No", "No internet service", "No phone service"}
+
+# ── App state ─────────────────────────────────────────────────────────────────
+_state: dict = {
+    "pipeline": None,
+    "version": "unknown",
+    "stage": "unknown",
+    "source": "none",
+    "loaded_at": None,
+    "mean_monthly": 64.76,  # fallback — Telco dataset average
+    "feature_info": None,
+    "start_time": time.time(),
+}
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _load_feature_info()
+    _load_mean_monthly()
+    _load_model()
+    log.info("✅ API lista.")
+    yield
+
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="ChurnGuard API",
+    description="Predicción de churn de clientes de telecomunicaciones con MLOps.",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def verify_api_key(key: Optional[str] = Security(_api_key_header)):
+    """Valida el API key. En modo dev (key por defecto) no se exige."""
+    if API_KEY_VALUE == "dev-key-change-in-production":
+        return key or "dev"
+    if not key or key != API_KEY_VALUE:
+        raise HTTPException(status_code=403, detail="API key inválido o ausente.")
+    return key
+
+
+def _load_feature_info():
+    path = DATA_PROCESSED / "feature_names.json"
+    if path.exists():
+        with open(path) as f:
+            _state["feature_info"] = json.load(f)
+        log.info("feature_names.json cargado.")
+    else:
+        log.warning("feature_names.json no encontrado — usando defaults.")
+
+
+def _load_mean_monthly():
+    path = DATA_PROCESSED / "train.parquet"
+    if path.exists():
+        try:
+            df = pd.read_parquet(path, columns=["MonthlyCharges"])
+            _state["mean_monthly"] = float(df["MonthlyCharges"].mean())
+            log.info(f"mean_monthly cargado: {_state['mean_monthly']:.2f}")
+        except Exception as e:
+            log.warning(f"No se pudo calcular mean_monthly: {e}")
+    else:
+        log.warning(f"train.parquet no encontrado — usando mean_monthly={_state['mean_monthly']:.2f}")
+
+
+def _load_model():
+    # 1. Intentar MLflow Registry
+    try:
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        model_uri = f"models:/{MODEL_NAME}/{MODEL_STAGE}"
+        pipeline = mlflow.sklearn.load_model(model_uri)
+        client = mlflow.MlflowClient()
+        # search_model_versions es la API moderna (get_latest_versions deprecado en 2.9+)
+        versions = client.search_model_versions(
+            f"name='{MODEL_NAME}'", max_results=1, order_by=["version_number DESC"]
+        )
+        version = str(versions[0].version) if versions else "registry"
+        _state.update(pipeline=pipeline, version=version, stage=MODEL_STAGE, source="mlflow")
+        log.info(f"Modelo cargado desde MLflow Registry: v{version} ({MODEL_STAGE})")
+        return
+    except Exception as e:
+        log.warning(f"MLflow no disponible ({type(e).__name__}). Usando modelo local.")
+
+    # 2. Fallback: archivo local
+    local_path = MODELS_DIR / "preprocessor.joblib"
+    if local_path.exists():
+        pipeline = joblib.load(local_path)
+        _state.update(pipeline=pipeline, version="local", stage="Production", source="local")
+        log.info("Modelo cargado desde models/preprocessor.joblib")
+    else:
+        log.error("❌ No se encontró ningún modelo. La API está degradada.")
+
+    _state["loaded_at"] = datetime.utcnow().isoformat()
+
+
+# ── Feature engineering ───────────────────────────────────────────────────────
+def _build_features(customer: CustomerFeatures) -> pd.DataFrame:
+    """Reproduce el feature engineering de data_prep.py para la inferencia."""
+    d = customer.model_dump()
+    mean_monthly = _state["mean_monthly"]
+
+    d["avg_monthly_spend"] = d["TotalCharges"] / (d["tenure"] + 1)
+    d["monthly_charge_ratio"] = d["MonthlyCharges"] / mean_monthly
+    d["num_services"] = sum(1 for col in _SERVICE_COLS if d.get(col) not in _NO_VALUES)
+    d["is_long_term"] = int(d["tenure"] > 24)
+
+    return pd.DataFrame([d])
+
+
+def _compute_risk(probability: float) -> RiskLevel:
+    if probability < 0.35:
+        return RiskLevel.LOW
+    if probability < 0.60:
+        return RiskLevel.MEDIUM
+    return RiskLevel.HIGH
+
+
+def _single_predict(customer: CustomerFeatures) -> PredictionResponse:
+    pipeline = _state["pipeline"]
+    if pipeline is None:
+        raise HTTPException(status_code=503, detail="Modelo no disponible.")
+
+    df = _build_features(customer)
+    proba = float(pipeline.predict_proba(df)[0, 1])
+    pred = bool(pipeline.predict(df)[0])
+    risk = _compute_risk(proba)
+
+    return PredictionResponse(
+        prediction_id=str(uuid.uuid4()),
+        churn_probability=round(proba, 4),
+        churn_prediction=pred,
+        risk_level=risk,
+        model_version=_state["version"],
+        model_stage=_state["stage"],
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
+
+# ── Endpoints: público ────────────────────────────────────────────────────────
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def dashboard():
+    return HTMLResponse(content=_DASHBOARD_HTML)
+
+
+@app.get("/health", response_model=HealthResponse, tags=["Status"])
+async def health():
+    uptime = time.time() - _state["start_time"]
+    return HealthResponse(
+        status="ok" if _state["pipeline"] is not None else "degraded",
+        model_loaded=_state["pipeline"] is not None,
+        model_version=_state["version"],
+        model_stage=_state["stage"],
+        model_source=_state["source"],
+        uptime_seconds=round(uptime, 1),
+        timestamp=datetime.utcnow().isoformat(),
+    )
+
+
+@app.get("/metrics", response_model=MetricsResponse, tags=["Status"])
+async def get_metrics():
+    path = REPORTS_DIR / "metrics.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="metrics.json no encontrado. Ejecuta: dvc repro evaluate")
+    with open(path) as f:
+        data = json.load(f)
+    return MetricsResponse(**data)
+
+
+@app.get("/model/info", response_model=ModelInfoResponse, tags=["Status"])
+async def model_info():
+    fi = _state.get("feature_info") or {}
+    return ModelInfoResponse(
+        model_name=MODEL_NAME,
+        version=_state["version"],
+        stage=_state["stage"],
+        source=_state["source"],
+        feature_count=len(fi.get("all_features", [])),
+        train_samples=fi.get("train_samples", 0),
+        test_samples=fi.get("test_samples", 0),
+        churn_rate_train=round(fi.get("churn_rate_train", 0.0), 4),
+        loaded_at=_state.get("loaded_at") or datetime.utcnow().isoformat(),
+    )
+
+
+# ── Endpoints: predicción ─────────────────────────────────────────────────────
+@app.post("/predict", response_model=PredictionResponse, tags=["Predicción"])
+async def predict(
+    customer: CustomerFeatures,
+    _key: str = Depends(verify_api_key),
+):
+    return _single_predict(customer)
+
+
+@app.post("/predict/batch", response_model=BatchPredictionResponse, tags=["Predicción"])
+async def predict_batch(
+    request: BatchPredictionRequest,
+    _key: str = Depends(verify_api_key),
+):
+    t0 = time.perf_counter()
+    predictions = [_single_predict(c) for c in request.customers]
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+
+    high = sum(1 for p in predictions if p.risk_level == RiskLevel.HIGH)
+    medium = sum(1 for p in predictions if p.risk_level == RiskLevel.MEDIUM)
+    low = sum(1 for p in predictions if p.risk_level == RiskLevel.LOW)
+
+    return BatchPredictionResponse(
+        predictions=predictions,
+        total=len(predictions),
+        high_risk_count=high,
+        medium_risk_count=medium,
+        low_risk_count=low,
+        processing_time_ms=round(elapsed_ms, 2),
+    )
+
+
+# ── Endpoints: monitoreo ──────────────────────────────────────────────────────
+@app.get("/monitoring/drift", tags=["Monitoreo"])
+async def get_drift_report():
+    report_path = MONITORING_DIR / "drift_report.json"
+    if not report_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Reporte de drift no disponible. POST /monitoring/run para generarlo.",
+        )
+    with open(report_path) as f:
+        return JSONResponse(content=json.load(f))
+
+
+@app.post("/monitoring/run", response_model=DriftSummary, tags=["Monitoreo"])
+async def run_drift(
+    _key: str = Depends(verify_api_key),
+):
+    try:
+        from monitoring.drift_detector import run_drift_detection
+
+        MONITORING_DIR.mkdir(parents=True, exist_ok=True)
+        summary = run_drift_detection(
+            reference_path=DATA_PROCESSED / "train.parquet",
+            current_path=DATA_PROCESSED / "test.parquet",
+            output_dir=MONITORING_DIR,
+        )
+        return summary
+    except Exception as e:
+        log.error(f"Error en drift detection: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dashboard HTML ────────────────────────────────────────────────────────────
+_DASHBOARD_HTML = """<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChurnGuard · Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: #060b16; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0d1527; }
+    ::-webkit-scrollbar-thumb { background: #2d3f5e; border-radius: 3px; }
+
+    /* ── Nav glow line ── */
+    .nav-glow { border-bottom: 1px solid rgba(99,102,241,0.25); box-shadow: 0 1px 20px rgba(99,102,241,0.08); }
+
+    /* ── Cards ── */
+    .card { background: #0d1527; border: 1px solid rgba(148,163,184,0.07); border-radius: 14px; }
+    .card-hover { transition: border-color .2s, box-shadow .2s; }
+    .card-hover:hover { border-color: rgba(99,102,241,0.35); box-shadow: 0 0 24px rgba(99,102,241,0.1); }
+
+    /* ── Metric cards gradient bar ── */
+    .metric-bar { height: 3px; border-radius: 2px; margin-bottom: 16px; }
+
+    /* ── Tab ── */
+    .tab-btn { position: relative; padding: 10px 20px; color: #64748b; font-size: .875rem; font-weight: 500; transition: color .2s; cursor: pointer; border: none; background: none; }
+    .tab-btn::after { content: ''; position: absolute; bottom: -1px; left: 50%; right: 50%; height: 2px; background: #6366f1; border-radius: 2px 2px 0 0; transition: left .2s, right .2s; }
+    .tab-btn.active { color: #e2e8f0; }
+    .tab-btn.active::after { left: 0; right: 0; }
+    .tab-btn:not(.active):hover { color: #94a3b8; }
+
+    /* ── Form inputs ── */
+    .form-input {
+      width: 100%; background: #111c30; border: 1px solid rgba(148,163,184,0.12);
+      border-radius: 8px; padding: 9px 12px; color: #e2e8f0; font-size: .875rem;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    .form-input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+    .form-input option { background: #111c30; }
+    .form-label { display: block; font-size: .75rem; font-weight: 500; color: #64748b; margin-bottom: 5px; text-transform: uppercase; letter-spacing: .04em; }
+    .section-title { font-size: .7rem; font-weight: 600; color: #6366f1; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; }
+    .section-title::before { content: ''; flex: 1; height: 1px; background: rgba(99,102,241,0.2); }
+    .section-title::after { content: ''; flex: 1; height: 1px; background: rgba(99,102,241,0.2); }
+
+    /* ── Predict button ── */
+    .btn-predict {
+      width: 100%; padding: 12px; border-radius: 10px; font-weight: 600; font-size: .9rem;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white; border: none; cursor: pointer;
+      transition: opacity .15s, transform .1s, box-shadow .2s;
+      box-shadow: 0 4px 20px rgba(99,102,241,0.3);
+    }
+    .btn-predict:hover { opacity: .92; box-shadow: 0 6px 28px rgba(99,102,241,0.4); }
+    .btn-predict:active { transform: scale(.98); }
+    .btn-predict:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* ── Gauge ── */
+    #gauge-ring { transition: stroke-dashoffset 1s cubic-bezier(.4,0,.2,1), stroke .8s ease; }
+
+    /* ── Risk badges ── */
+    .badge-low    { background: rgba(34,197,94,.12);  color: #4ade80; border: 1px solid rgba(34,197,94,.25); }
+    .badge-medium { background: rgba(245,158,11,.12); color: #fbbf24; border: 1px solid rgba(245,158,11,.25); }
+    .badge-high   { background: rgba(239,68,68,.12);  color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+
+    /* ── Toast ── */
+    #toast { transform: translateY(20px); opacity: 0; transition: transform .3s, opacity .3s; }
+    #toast.show { transform: translateY(0); opacity: 1; }
+
+    /* ── Pulse ── */
+    .pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,.4); animation: pulse-ring 2s infinite; }
+    @keyframes pulse-ring { 0%{box-shadow:0 0 0 0 rgba(34,197,94,.4)} 70%{box-shadow:0 0 0 8px rgba(34,197,94,0)} 100%{box-shadow:0 0 0 0 rgba(34,197,94,0)} }
+
+    /* ── Result fade in ── */
+    @keyframes fade-up { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+    .fade-up { animation: fade-up .4s ease forwards; }
+
+    /* ── Stat card number ── */
+    .stat-num { font-size: 2rem; font-weight: 700; line-height: 1; }
+
+    /* ── Skeleton ── */
+    .skeleton { background: linear-gradient(90deg, #111c30 25%, #172038 50%, #111c30 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 6px; }
+    @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  </style>
+</head>
+
+<body class="text-slate-100 min-h-screen">
+
+<!-- ══ NAVBAR ══════════════════════════════════════════════════════════════ -->
+<nav class="fixed top-0 left-0 right-0 z-50 nav-glow" style="background:rgba(6,11,22,.92);backdrop-filter:blur(14px);">
+  <div class="max-w-7xl mx-auto px-6 flex items-center justify-between h-14">
+    <!-- Logo -->
+    <div class="flex items-center gap-3">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#6366f1,#a855f7);border-radius:8px;display:flex;align-items:center;justify-content:center;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      <span style="font-weight:700;font-size:1.05rem;letter-spacing:-.02em;">Churn<span style="color:#818cf8;">Guard</span></span>
+      <span style="font-size:.7rem;color:#475569;font-weight:500;padding:2px 8px;background:#0d1527;border:1px solid #1e2d44;border-radius:20px;">MLOps</span>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex border-b border-transparent" style="border-bottom-color:rgba(148,163,184,0.08);">
+      <button class="tab-btn active" onclick="switchTab('dashboard',this)">Dashboard</button>
+      <button class="tab-btn" onclick="switchTab('predict',this)">Predecir</button>
+      <button class="tab-btn" onclick="switchTab('batch',this)">Batch</button>
+      <a href="/docs" target="_blank" class="tab-btn" style="text-decoration:none;">API Docs ↗</a>
+    </div>
+
+    <!-- Status -->
+    <div id="model-status" class="flex items-center gap-2 px-3 py-1.5 rounded-full" style="background:#0d1527;border:1px solid rgba(148,163,184,0.1);">
+      <div class="pulse-dot"></div>
+      <span id="status-label" style="font-size:.75rem;font-weight:600;color:#94a3b8;">cargando…</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ══ CONTENT ══════════════════════════════════════════════════════════════ -->
+<main class="pt-20 pb-12 max-w-7xl mx-auto px-6">
+
+  <!-- ── TAB: DASHBOARD ──────────────────────────────────────────────────── -->
+  <div id="tab-dashboard">
+
+    <!-- Section header -->
+    <div class="mb-6">
+      <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em;">Model Overview</h1>
+      <p style="color:#64748b;font-size:.875rem;margin-top:2px;">Métricas de rendimiento en el conjunto de test.</p>
+    </div>
+
+    <!-- Metric cards -->
+    <div class="grid grid-cols-2 gap-4 mb-4" style="grid-template-columns:repeat(4,1fr);">
+      <!-- AUC -->
+      <div class="card card-hover p-5">
+        <div class="metric-bar" style="background:linear-gradient(90deg,#6366f1,#a855f7);"></div>
+        <p style="font-size:.75rem;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">ROC AUC</p>
+        <p id="metric-auc" class="stat-num skeleton" style="min-width:80px;min-height:32px;">&nbsp;</p>
+        <p style="font-size:.75rem;color:#475569;margin-top:4px;">threshold ≥ 0.78</p>
+      </div>
+      <!-- F1 -->
+      <div class="card card-hover p-5">
+        <div class="metric-bar" style="background:linear-gradient(90deg,#22c55e,#16a34a);"></div>
+        <p style="font-size:.75rem;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">F1 Score</p>
+        <p id="metric-f1" class="stat-num skeleton" style="min-width:80px;min-height:32px;">&nbsp;</p>
+        <p style="font-size:.75rem;color:#475569;margin-top:4px;">threshold ≥ 0.58</p>
+      </div>
+      <!-- Recall -->
+      <div class="card card-hover p-5">
+        <div class="metric-bar" style="background:linear-gradient(90deg,#f59e0b,#d97706);"></div>
+        <p style="font-size:.75rem;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Recall</p>
+        <p id="metric-recall" class="stat-num skeleton" style="min-width:80px;min-height:32px;">&nbsp;</p>
+        <p style="font-size:.75rem;color:#475569;margin-top:4px;">threshold ≥ 0.55</p>
+      </div>
+      <!-- Precision -->
+      <div class="card card-hover p-5">
+        <div class="metric-bar" style="background:linear-gradient(90deg,#06b6d4,#0891b2);"></div>
+        <p style="font-size:.75rem;font-weight:500;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Precision</p>
+        <p id="metric-precision" class="stat-num skeleton" style="min-width:80px;min-height:32px;">&nbsp;</p>
+        <p style="font-size:.75rem;color:#475569;margin-top:4px;">— </p>
+      </div>
+    </div>
+
+    <!-- Model info -->
+    <div class="card p-6 mb-4">
+      <div class="flex items-center justify-between mb-4">
+        <h2 style="font-weight:600;font-size:1rem;">Información del modelo</h2>
+        <button onclick="refreshDashboard()" style="font-size:.75rem;color:#6366f1;background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:4px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-4.93"/></svg>
+          Actualizar
+        </button>
+      </div>
+      <div class="grid gap-4" style="grid-template-columns:repeat(3,1fr);">
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Nombre</p>
+          <p id="info-name" style="font-weight:600;font-size:.9rem;">churn-prediction-model</p>
+        </div>
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Versión</p>
+          <p id="info-version" style="font-weight:600;font-size:.9rem;">—</p>
+        </div>
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Stage</p>
+          <p id="info-stage" style="font-weight:600;font-size:.9rem;">—</p>
+        </div>
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Fuente</p>
+          <p id="info-source" style="font-weight:600;font-size:.9rem;">—</p>
+        </div>
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Muestras test</p>
+          <p id="info-samples" style="font-weight:600;font-size:.9rem;">—</p>
+        </div>
+        <div>
+          <p style="font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;">Churn rate (train)</p>
+          <p id="info-churn" style="font-weight:600;font-size:.9rem;">—</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Quick test -->
+    <div class="card p-5" style="border-color:rgba(99,102,241,0.2);">
+      <p style="font-size:.8rem;color:#64748b;margin-bottom:2px;font-weight:500;">Prueba rápida de la API</p>
+      <p style="font-size:.75rem;color:#475569;font-family:monospace;margin-top:6px;background:#080e1e;padding:10px 14px;border-radius:8px;border:1px solid #1a2740;">
+        POST /predict · GET /health · GET /metrics · POST /predict/batch
+      </p>
+    </div>
+  </div><!-- /tab-dashboard -->
+
+  <!-- ── TAB: PREDICT ───────────────────────────────────────────────────── -->
+  <div id="tab-predict" style="display:none;">
+
+    <div class="mb-6">
+      <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em;">Analizar cliente</h1>
+      <p style="color:#64748b;font-size:.875rem;margin-top:2px;">Completa los datos del cliente para obtener la probabilidad de churn.</p>
+    </div>
+
+    <div class="grid gap-6" style="grid-template-columns:1fr 400px;align-items:start;">
+
+      <!-- ── Formulario ── -->
+      <div class="card p-6">
+        <form id="predict-form" onsubmit="submitPredict(event)">
+
+          <!-- API Key (solo si no está en dev mode) -->
+          <div style="margin-bottom:20px;">
+            <label class="form-label">X-API-Key</label>
+            <input class="form-input" type="text" id="api-key-input" placeholder="dev-key-change-in-production" value="dev-key-change-in-production" />
+          </div>
+
+          <!-- Perfil del cliente -->
+          <p class="section-title">Perfil del cliente</p>
+          <div class="grid gap-4 mb-4" style="grid-template-columns:repeat(3,1fr);">
+            <div>
+              <label class="form-label">Tenure (meses)</label>
+              <input class="form-input" type="number" id="f-tenure" min="0" max="100" value="24" required />
+            </div>
+            <div>
+              <label class="form-label">Cargo mensual (USD)</label>
+              <input class="form-input" type="number" id="f-monthly" step="0.01" min="0" value="65.50" required />
+            </div>
+            <div>
+              <label class="form-label">Total cargos (USD)</label>
+              <input class="form-input" type="number" id="f-total" step="0.01" min="0" value="1572.00" required />
+            </div>
+            <div>
+              <label class="form-label">Género</label>
+              <select class="form-input" id="f-gender">
+                <option>Male</option><option>Female</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Senior citizen</label>
+              <select class="form-input" id="f-senior">
+                <option value="0">No</option><option value="1">Sí</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Partner</label>
+              <select class="form-input" id="f-partner">
+                <option>No</option><option>Yes</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Dependientes</label>
+              <select class="form-input" id="f-dependents">
+                <option>No</option><option>Yes</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Servicios -->
+          <p class="section-title">Servicios</p>
+          <div class="grid gap-4 mb-4" style="grid-template-columns:repeat(3,1fr);">
+            <div>
+              <label class="form-label">Servicio telefónico</label>
+              <select class="form-input" id="f-phone">
+                <option>Yes</option><option>No</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Múltiples líneas</label>
+              <select class="form-input" id="f-lines">
+                <option>No</option><option>Yes</option><option>No phone service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Servicio de internet</label>
+              <select class="form-input" id="f-internet">
+                <option>Fiber optic</option><option>DSL</option><option>No</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Seguridad online</label>
+              <select class="form-input" id="f-security">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Backup online</label>
+              <select class="form-input" id="f-backup">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Protección de dispositivo</label>
+              <select class="form-input" id="f-device">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Soporte técnico</label>
+              <select class="form-input" id="f-tech">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Streaming TV</label>
+              <select class="form-input" id="f-tv">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Streaming películas</label>
+              <select class="form-input" id="f-movies">
+                <option>No</option><option>Yes</option><option>No internet service</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Contrato -->
+          <p class="section-title">Contrato y facturación</p>
+          <div class="grid gap-4 mb-6" style="grid-template-columns:repeat(3,1fr);">
+            <div>
+              <label class="form-label">Tipo de contrato</label>
+              <select class="form-input" id="f-contract">
+                <option>Month-to-month</option><option>One year</option><option>Two year</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Facturación digital</label>
+              <select class="form-input" id="f-billing">
+                <option>Yes</option><option>No</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Método de pago</label>
+              <select class="form-input" id="f-payment">
+                <option>Electronic check</option>
+                <option>Mailed check</option>
+                <option>Bank transfer (automatic)</option>
+                <option>Credit card (automatic)</option>
+              </select>
+            </div>
+          </div>
+
+          <button type="submit" id="btn-predict" class="btn-predict">
+            <span id="btn-text">Analizar cliente</span>
+          </button>
+        </form>
+      </div><!-- /form card -->
+
+      <!-- ── Panel de resultados ── -->
+      <div id="results-panel">
+        <!-- Estado inicial -->
+        <div id="results-placeholder" class="card p-8 text-center" style="border-style:dashed;border-color:rgba(148,163,184,0.15);">
+          <div style="width:56px;height:56px;background:#0d1527;border-radius:14px;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#475569" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          </div>
+          <p style="color:#475569;font-size:.875rem;">Completa el formulario y haz clic en <strong style="color:#6366f1;">Analizar cliente</strong> para ver los resultados.</p>
+        </div>
+
+        <!-- Resultado real -->
+        <div id="results-content" style="display:none;" class="fade-up">
+          <div class="card p-6 mb-4">
+            <!-- Gauge SVG -->
+            <div style="display:flex;flex-direction:column;align-items:center;padding:8px 0 0;">
+              <svg viewBox="0 0 200 115" width="220" height="126">
+                <defs>
+                  <linearGradient id="gGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#22c55e"/>
+                    <stop offset="50%" stop-color="#f59e0b"/>
+                    <stop offset="100%" stop-color="#ef4444"/>
+                  </linearGradient>
+                </defs>
+                <!-- Background arc -->
+                <path d="M 16 100 A 84 84 0 0 1 184 100" fill="none" stroke="#111c30" stroke-width="16" stroke-linecap="round"/>
+                <!-- Value arc -->
+                <path id="gauge-ring"
+                  d="M 16 100 A 84 84 0 0 1 184 100"
+                  fill="none"
+                  stroke="url(#gGrad)"
+                  stroke-width="16"
+                  stroke-linecap="round"
+                  stroke-dasharray="263.9"
+                  stroke-dashoffset="263.9"/>
+                <!-- Center text -->
+                <text x="100" y="90" text-anchor="middle" fill="#f1f5f9" font-size="28" font-weight="700" font-family="Inter,sans-serif" id="gauge-percent">0%</text>
+                <text x="100" y="110" text-anchor="middle" fill="#64748b" font-size="10" font-family="Inter,sans-serif">probabilidad de churn</text>
+              </svg>
+            </div>
+
+            <!-- Risk badge -->
+            <div style="display:flex;justify-content:center;margin:8px 0 16px;">
+              <span id="risk-badge" style="padding:6px 18px;border-radius:20px;font-size:.8rem;font-weight:700;letter-spacing:.05em;">—</span>
+            </div>
+
+            <!-- Details grid -->
+            <div style="border-top:1px solid rgba(148,163,184,0.08);padding-top:14px;display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.8rem;color:#64748b;">Predicción</span>
+                <span id="pred-label" style="font-size:.875rem;font-weight:600;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.8rem;color:#64748b;">Probabilidad</span>
+                <span id="pred-prob" style="font-size:.875rem;font-weight:600;font-family:monospace;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.8rem;color:#64748b;">Modelo</span>
+                <span id="pred-model" style="font-size:.75rem;color:#475569;font-family:monospace;">—</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:.8rem;color:#64748b;">ID</span>
+                <span id="pred-id" style="font-size:.7rem;color:#475569;font-family:monospace;">—</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Señales de riesgo -->
+          <div class="card p-5">
+            <p style="font-size:.75rem;font-weight:600;color:#6366f1;text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px;">Señales de riesgo</p>
+            <div id="risk-signals" style="display:flex;flex-direction:column;gap:6px;"></div>
+          </div>
+        </div>
+      </div><!-- /results-panel -->
+
+    </div>
+  </div><!-- /tab-predict -->
+
+  <!-- ── TAB: BATCH ─────────────────────────────────────────────────────── -->
+  <div id="tab-batch" style="display:none;">
+    <div class="mb-6">
+      <h1 style="font-size:1.5rem;font-weight:700;letter-spacing:-.02em;">Predicción en batch</h1>
+      <p style="color:#64748b;font-size:.875rem;margin-top:2px;">Envía un JSON array de clientes al endpoint <code style="font-size:.8rem;color:#818cf8;background:#0d1527;padding:1px 6px;border-radius:4px;">POST /predict/batch</code>.</p>
+    </div>
+
+    <div class="card p-6 mb-4">
+      <p class="form-label" style="margin-bottom:8px;">Body JSON de ejemplo</p>
+      <pre style="background:#080e1e;border:1px solid #1a2740;border-radius:10px;padding:16px;font-size:.78rem;color:#94a3b8;overflow-x:auto;line-height:1.6;">{
+  "customers": [
+    {
+      "tenure": 24,
+      "MonthlyCharges": 65.5,
+      "TotalCharges": 1572.0,
+      "Contract": "Month-to-month",
+      "InternetService": "Fiber optic",
+      "PaymentMethod": "Electronic check"
+    },
+    {
+      "tenure": 60,
+      "MonthlyCharges": 45.0,
+      "TotalCharges": 2700.0,
+      "Contract": "Two year",
+      "InternetService": "DSL",
+      "PaymentMethod": "Bank transfer (automatic)"
+    }
+  ]
+}</pre>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button onclick="runBatchExample()" class="btn-predict" style="width:auto;padding:10px 20px;font-size:.85rem;">
+          Ejecutar ejemplo
+        </button>
+        <a href="/docs#/Predicción/predict_batch_predict_batch_post" target="_blank"
+           style="padding:10px 20px;border-radius:10px;font-size:.85rem;font-weight:600;color:#6366f1;border:1px solid rgba(99,102,241,0.35);text-decoration:none;display:flex;align-items:center;gap:6px;">
+          Ver en Swagger ↗
+        </a>
+      </div>
+    </div>
+
+    <div id="batch-results" style="display:none;" class="card p-6 fade-up">
+      <p style="font-size:.75rem;font-weight:600;color:#6366f1;text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px;">Resultados</p>
+      <div id="batch-summary" class="grid gap-3 mb-4" style="grid-template-columns:repeat(3,1fr);"></div>
+      <div id="batch-table"></div>
+    </div>
+  </div><!-- /tab-batch -->
+
+</main><!-- /content -->
+
+<!-- ── TOAST ─────────────────────────────────────────────────────────────── -->
+<div id="toast" class="fixed bottom-5 right-5 px-4 py-3 rounded-xl text-sm font-medium z-50"
+     style="background:#0d1527;border:1px solid rgba(148,163,184,0.15);box-shadow:0 8px 32px rgba(0,0,0,.4);">
+  <span id="toast-msg">—</span>
+</div>
+
+<!-- ══ JAVASCRIPT ════════════════════════════════════════════════════════════ -->
+<script>
+// ── Tab switching ─────────────────────────────────────────────────────────
+const TABS = ['dashboard','predict','batch'];
+function switchTab(name, btn) {
+  TABS.forEach(t => {
+    document.getElementById('tab-'+t).style.display = (t===name) ? '' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────
+let _toastTimeout;
+function showToast(msg, type='info') {
+  const el = document.getElementById('toast');
+  const colors = { info:'#6366f1', error:'#ef4444', success:'#22c55e', warn:'#f59e0b' };
+  el.style.borderColor = colors[type] || colors.info;
+  document.getElementById('toast-msg').textContent = msg;
+  el.classList.add('show');
+  clearTimeout(_toastTimeout);
+  _toastTimeout = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+// ── Gauge animation ───────────────────────────────────────────────────────
+const GAUGE_ARC = Math.PI * 84; // ≈ 263.9
+function animateGauge(prob) {
+  const ring = document.getElementById('gauge-ring');
+  const pctEl = document.getElementById('gauge-percent');
+  ring.style.strokeDashoffset = GAUGE_ARC * (1 - prob);
+
+  // Animate number
+  let cur = 0;
+  const target = Math.round(prob * 100);
+  const step = target / 30;
+  const t = setInterval(() => {
+    cur = Math.min(cur + step, target);
+    pctEl.textContent = Math.round(cur) + '%';
+    if (cur >= target) clearInterval(t);
+  }, 16);
+}
+
+// ── Risk badge ────────────────────────────────────────────────────────────
+function applyRiskBadge(level) {
+  const badge = document.getElementById('risk-badge');
+  badge.className = '';
+  const map = {
+    LOW:    ['badge-low',    '● RIESGO BAJO'],
+    MEDIUM: ['badge-medium', '● RIESGO MEDIO'],
+    HIGH:   ['badge-high',   '● RIESGO ALTO'],
+  };
+  const [cls, label] = map[level] || ['badge-medium','—'];
+  badge.classList.add(cls);
+  badge.style.cssText = `padding:6px 18px;border-radius:20px;font-size:.8rem;font-weight:700;letter-spacing:.05em;`;
+  badge.textContent = label;
+}
+
+// ── Risk signals ──────────────────────────────────────────────────────────
+function buildRiskSignals(data) {
+  const signals = [];
+  const p = data._input;
+  if (p.Contract === 'Month-to-month') signals.push({ text: 'Contrato mes a mes (mayor riesgo)', neg: true });
+  if (p.tenure < 12) signals.push({ text: `Tenure bajo: ${p.tenure} meses`, neg: true });
+  if (p.InternetService === 'Fiber optic') signals.push({ text: 'Fibra óptica — servicio premium con mayor churn', neg: true });
+  if (p.PaymentMethod === 'Electronic check') signals.push({ text: 'Pago por cheque electrónico (correlación con churn)', neg: true });
+  if (p.tenure > 24) signals.push({ text: `Cliente de largo plazo: ${p.tenure} meses`, neg: false });
+  if (p.Contract === 'Two year') signals.push({ text: 'Contrato de 2 años (menor riesgo)', neg: false });
+  if (['OnlineSecurity','TechSupport'].some(s => p[s]==='Yes')) signals.push({ text: 'Tiene servicios de valor añadido', neg: false });
+
+  const container = document.getElementById('risk-signals');
+  container.innerHTML = signals.length ? signals.map(s => `
+    <div style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:7px;background:${s.neg ? 'rgba(239,68,68,.06)' : 'rgba(34,197,94,.06)'};border:1px solid ${s.neg ? 'rgba(239,68,68,.15)' : 'rgba(34,197,94,.15)'};">
+      <span style="font-size:13px;">${s.neg ? '⚠' : '✓'}</span>
+      <span style="font-size:.78rem;color:${s.neg ? '#fca5a5' : '#86efac'};">${s.text}</span>
+    </div>`).join('') : '<p style="font-size:.8rem;color:#475569;">Sin señales destacadas.</p>';
+}
+
+// ── Build request payload ─────────────────────────────────────────────────
+function buildPayload() {
+  return {
+    tenure: parseInt(document.getElementById('f-tenure').value),
+    MonthlyCharges: parseFloat(document.getElementById('f-monthly').value),
+    TotalCharges: parseFloat(document.getElementById('f-total').value),
+    gender: document.getElementById('f-gender').value,
+    SeniorCitizen: parseInt(document.getElementById('f-senior').value),
+    Partner: document.getElementById('f-partner').value,
+    Dependents: document.getElementById('f-dependents').value,
+    PhoneService: document.getElementById('f-phone').value,
+    MultipleLines: document.getElementById('f-lines').value,
+    InternetService: document.getElementById('f-internet').value,
+    OnlineSecurity: document.getElementById('f-security').value,
+    OnlineBackup: document.getElementById('f-backup').value,
+    DeviceProtection: document.getElementById('f-device').value,
+    TechSupport: document.getElementById('f-tech').value,
+    StreamingTV: document.getElementById('f-tv').value,
+    StreamingMovies: document.getElementById('f-movies').value,
+    Contract: document.getElementById('f-contract').value,
+    PaperlessBilling: document.getElementById('f-billing').value,
+    PaymentMethod: document.getElementById('f-payment').value,
+  };
+}
+
+// ── Submit predict ────────────────────────────────────────────────────────
+async function submitPredict(e) {
+  e.preventDefault();
+  const btn = document.getElementById('btn-predict');
+  const btnText = document.getElementById('btn-text');
+  btn.disabled = true;
+  btnText.textContent = 'Analizando…';
+
+  const payload = buildPayload();
+  const key = document.getElementById('api-key-input').value || 'dev-key-change-in-production';
+
+  try {
+    const res = await fetch('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      showToast('Error: ' + (err.detail || res.statusText), 'error');
+      return;
+    }
+
+    const data = await res.json();
+    data._input = payload;
+    showResult(data);
+    showToast('Predicción completada.', 'success');
+  } catch (err) {
+    showToast('Error de conexión: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btnText.textContent = 'Analizar cliente';
+  }
+}
+
+function showResult(data) {
+  document.getElementById('results-placeholder').style.display = 'none';
+  const content = document.getElementById('results-content');
+  content.style.display = '';
+  content.classList.remove('fade-up');
+  void content.offsetWidth; // reflow to retrigger animation
+  content.classList.add('fade-up');
+
+  animateGauge(data.churn_probability);
+  applyRiskBadge(data.risk_level);
+  buildRiskSignals(data);
+
+  const churnColor = data.churn_prediction ? '#f87171' : '#4ade80';
+  document.getElementById('pred-label').innerHTML = `<span style="color:${churnColor};">${data.churn_prediction ? 'CHURN: SÍ' : 'CHURN: NO'}</span>`;
+  document.getElementById('pred-prob').textContent = (data.churn_probability * 100).toFixed(1) + '%';
+  document.getElementById('pred-model').textContent = `v${data.model_version} · ${data.model_stage}`;
+  document.getElementById('pred-id').textContent = data.prediction_id.slice(0, 18) + '…';
+}
+
+// ── Batch example ─────────────────────────────────────────────────────────
+async function runBatchExample() {
+  const key = 'dev-key-change-in-production';
+  const payload = {
+    customers: [
+      { tenure:24, MonthlyCharges:65.5, TotalCharges:1572.0, Contract:'Month-to-month', InternetService:'Fiber optic', PaymentMethod:'Electronic check' },
+      { tenure:60, MonthlyCharges:45.0, TotalCharges:2700.0, Contract:'Two year', InternetService:'DSL', PaymentMethod:'Bank transfer (automatic)' },
+      { tenure:3,  MonthlyCharges:90.0, TotalCharges:270.0,  Contract:'Month-to-month', InternetService:'Fiber optic', PaymentMethod:'Electronic check' },
+    ]
+  };
+  try {
+    const res = await fetch('/predict/batch', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','X-API-Key':key},
+      body:JSON.stringify(payload),
+    });
+    const data = await res.json();
+    showBatchResults(data);
+    showToast(`Batch: ${data.total} predicciones completadas.`, 'success');
+  } catch(err) { showToast('Error: '+err.message,'error'); }
+}
+
+function showBatchResults(data) {
+  const container = document.getElementById('batch-results');
+  container.style.display = '';
+  container.classList.remove('fade-up');
+  void container.offsetWidth;
+  container.classList.add('fade-up');
+
+  const riskColors = { HIGH:'#f87171', MEDIUM:'#fbbf24', LOW:'#4ade80' };
+  document.getElementById('batch-summary').innerHTML = `
+    <div class="card p-4 text-center"><p style="font-size:1.5rem;font-weight:700;">${data.total}</p><p style="font-size:.75rem;color:#64748b;margin-top:2px;">Total</p></div>
+    <div class="card p-4 text-center" style="border-color:rgba(239,68,68,.2);"><p style="font-size:1.5rem;font-weight:700;color:#f87171;">${data.high_risk_count}</p><p style="font-size:.75rem;color:#64748b;margin-top:2px;">Alto riesgo</p></div>
+    <div class="card p-4 text-center" style="border-color:rgba(34,197,94,.2);"><p style="font-size:1.5rem;font-weight:700;color:#4ade80;">${data.low_risk_count}</p><p style="font-size:.75rem;color:#64748b;margin-top:2px;">Bajo riesgo</p></div>`;
+
+  const rows = data.predictions.map((p,i) => `
+    <tr style="border-bottom:1px solid rgba(148,163,184,0.06);">
+      <td style="padding:10px 12px;font-size:.8rem;color:#64748b;">#${i+1}</td>
+      <td style="padding:10px 12px;font-size:.85rem;font-weight:600;">${(p.churn_probability*100).toFixed(1)}%</td>
+      <td style="padding:10px 12px;">
+        <span style="font-size:.75rem;font-weight:700;color:${riskColors[p.risk_level]};">${p.risk_level}</span>
+      </td>
+      <td style="padding:10px 12px;font-size:.75rem;color:#475569;font-family:monospace;">${p.prediction_id.slice(0,12)}…</td>
+    </tr>`).join('');
+
+  document.getElementById('batch-table').innerHTML = `
+    <table style="width:100%;border-collapse:collapse;">
+      <thead><tr style="border-bottom:1px solid rgba(148,163,184,0.1);">
+        <th style="padding:8px 12px;text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;">#</th>
+        <th style="padding:8px 12px;text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;">Probabilidad</th>
+        <th style="padding:8px 12px;text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;">Riesgo</th>
+        <th style="padding:8px 12px;text-align:left;font-size:.7rem;color:#475569;text-transform:uppercase;letter-spacing:.06em;">ID</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ── Load dashboard data ───────────────────────────────────────────────────
+async function refreshDashboard() {
+  try {
+    const [metricsRes, infoRes, healthRes] = await Promise.all([
+      fetch('/metrics'), fetch('/model/info'), fetch('/health')
+    ]);
+
+    if (metricsRes.ok) {
+      const m = await metricsRes.json();
+      document.getElementById('metric-auc').textContent = m.test_auc.toFixed(3);
+      document.getElementById('metric-auc').classList.remove('skeleton');
+      document.getElementById('metric-f1').textContent = m.test_f1.toFixed(3);
+      document.getElementById('metric-f1').classList.remove('skeleton');
+      document.getElementById('metric-recall').textContent = m.test_recall.toFixed(3);
+      document.getElementById('metric-recall').classList.remove('skeleton');
+      document.getElementById('metric-precision').textContent = m.test_precision.toFixed(3);
+      document.getElementById('metric-precision').classList.remove('skeleton');
+    }
+
+    if (infoRes.ok) {
+      const info = await infoRes.json();
+      document.getElementById('info-name').textContent = info.model_name;
+      document.getElementById('info-version').textContent = 'v' + info.version;
+      document.getElementById('info-stage').textContent = info.stage;
+      document.getElementById('info-source').textContent = info.source;
+      document.getElementById('info-samples').textContent = info.test_samples.toLocaleString();
+      document.getElementById('info-churn').textContent = (info.churn_rate_train * 100).toFixed(1) + '%';
+    }
+
+    if (healthRes.ok) {
+      const h = await healthRes.json();
+      document.getElementById('status-label').textContent = `${h.model_stage} · v${h.model_version}`;
+    }
+  } catch(e) {
+    showToast('No se pudo conectar a la API.', 'warn');
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+refreshDashboard();
+</script>
+
+</body>
+</html>
+"""

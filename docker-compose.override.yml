@@ -1,0 +1,43 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# docker-compose.override.yml — Configuración para DESARROLLO LOCAL
+#
+# Se aplica automáticamente sobre docker-compose.yml cuando ambos están presentes.
+# Activa:
+#   - Hot-reload de la API (monta el código fuente)
+#   - 1 solo worker Uvicorn (más rápido al arrancar)
+#   - API_KEY = dev-key (sin autenticación estricta)
+#   - Solo arranca la API (postgres + mlflow opcionales)
+#
+# Uso:
+#   docker-compose up api          # solo la API con hot-reload
+#   docker-compose up              # stack completo con hot-reload
+# ══════════════════════════════════════════════════════════════════════════════
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    command: >
+      uvicorn api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --reload
+      --reload-dir /app/api
+      --reload-dir /app/monitoring
+    volumes:
+      # Hot-reload: monta el código fuente para que los cambios se reflejen
+      - ./api:/app/api
+      - ./src:/app/src
+      - ./monitoring:/app/monitoring
+      # Artefactos con write (en dev podemos actualizar el modelo)
+      - ./models:/app/models
+      - ./data/processed:/app/data/processed
+      - ./reports:/app/reports
+    environment:
+      API_KEY: dev-key-change-in-production
+      MODEL_STAGE: Production
+      WORKERS: "1"
+    # En dev no esperamos a que MLflow esté listo
+    depends_on: {}

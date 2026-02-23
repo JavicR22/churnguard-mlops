@@ -17,22 +17,33 @@ env/
 # Variables de entorno (NUNCA subir a Git)
 .env
 
-# DVC - los datos van en remote storage, no en Git
+# DVC - el CSV crudo va en remote storage
 /data/raw/
-/data/processed/
-/models/
 !data/raw/.gitkeep
-!data/processed/.gitkeep
-!models/.gitkeep
 !data/raw/*.dvc
-!data/raw/.gitkeep
+
+# DVC outputs procesados — se commitean para despliegue portable
+# (son pequeños: ~220 KB total). Regenerar con: dvc repro
+/data/processed/
+!data/processed/.gitkeep
+!data/processed/train.parquet
+!data/processed/test.parquet
+!data/processed/feature_names.json
+
+# Modelo entrenado — se commitea para despliegue sin necesidad de DVC pull
+# (sklearn Pipeline ~ pocos MB). Regenerar con: dvc repro train
+/models/
+!models/.gitkeep
+!models/preprocessor.joblib
 # MLflow
 mlruns/
 mlartifacts/
 
-# Reports generados
+# Reports — se commitean para el dashboard de métricas
 reports/
 !reports/.gitkeep
+!reports/metrics.json
+!reports/confusion_matrix.png
 
 # Jupyter
 .ipynb_checkpoints/
