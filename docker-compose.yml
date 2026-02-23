@@ -1,7 +1,4 @@
-version: "3.9"
-
 services:
-  # ─── Base de datos para MLflow ───────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: churnguard-postgres
@@ -19,35 +16,30 @@ services:
       timeout: 5s
       retries: 5
 
-  # ─── MLflow Tracking Server ───────────────────────────────────────────
   mlflow:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
     container_name: churnguard-mlflow
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow123}@postgres:5432/${POSTGRES_DB:-mlflow}
-      MLFLOW_ARTIFACT_ROOT: /mlartifacts
     volumes:
       - mlflow_artifacts:/mlartifacts
     ports:
       - "5000:5000"
     command: >
-      bash -c "pip install mlflow psycopg2-binary --quiet &&
-               mlflow server
-               --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow123}@postgres:5432/${POSTGRES_DB:-mlflow}
-               --artifact-root /mlartifacts
-               --host 0.0.0.0
-               --port 5000"
+      /usr/local/bin/mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow123}@postgres:5432/${POSTGRES_DB:-mlflow}
+      --default-artifact-root /mlartifacts
+      --host 0.0.0.0
+      --port 5000
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
+      test: ["CMD-SHELL", "curl -f http://localhost:5000/health || exit 1"]
+      interval: 15s
       timeout: 10s
-      retries: 5
-      start_period: 60s
-
-  # ─── API FastAPI ──────────────────────────────────────────────────────
+      retries: 8
+      start_period: 45s
   api:
     build:
       context: .
