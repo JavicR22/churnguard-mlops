@@ -48,9 +48,8 @@ COPY params.yaml   .
 # Se incluyen en la imagen para despliegue sin necesidad de DVC pull.
 # Si no existen localmente, la API arranca en modo degradado (fallback a MLflow).
 # Para regenerarlos: make pipeline
-COPY models/           ./models/
-COPY data/processed/   ./data/processed/
-COPY reports/          ./reports/
+RUN mkdir -p models data/processed reports monitoring/reports
+
 
 # ── Configuración final ───────────────────────────────────────────────────────
 # Script de inicio
