@@ -13,7 +13,6 @@ from pathlib import Path
 import joblib
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 import yaml
 from imblearn.over_sampling import SMOTE
@@ -21,7 +20,6 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
-    auc,
     f1_score,
     precision_score,
     recall_score,
@@ -132,12 +130,7 @@ def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params
     with mlflow.start_run(run_name=model_name) as run:
         log.info(f"Entrenando {model_name}...")
 
-        # Pipeline completo: preprocesador + modelo
-        pipeline = Pipeline([
-            ("preprocessor", preprocessor),
-            ("classifier", model),
-        ])
-
+        
         # Aplicar SMOTE para balancear clases (el dataset tiene ~26% churn)
         preprocessor_only = Pipeline([("preprocessor", preprocessor)])
         X_preprocessed = preprocessor_only.fit_transform(X_train)
@@ -227,12 +220,12 @@ def main():
     best_model_name = max(results, key=lambda k: results[k]["auc"])
     best_result = results[best_model_name]
 
-    log.info("\n" + "="*50)
+    log.info("\n" + "=" * 50)
     log.info("RESULTADOS DE ENTRENAMIENTO:")
     for name, result in results.items():
         marker = "  ← GANADOR" if name == best_model_name else ""
         log.info(f"  {name}: AUC = {result['auc']:.4f}{marker}")
-    log.info("="*50)
+    log.info("=" * 50)
 
     # Verificar threshold mínimo
     min_auc = params["thresholds"]["min_auc"]
