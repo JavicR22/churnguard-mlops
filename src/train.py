@@ -130,7 +130,6 @@ def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params
     with mlflow.start_run(run_name=model_name) as run:
         log.info(f"Entrenando {model_name}...")
 
-        
         # Aplicar SMOTE para balancear clases (el dataset tiene ~26% churn)
         preprocessor_only = Pipeline([("preprocessor", preprocessor)])
         X_preprocessed = preprocessor_only.fit_transform(X_train)
