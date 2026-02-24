@@ -51,9 +51,7 @@ def feature_info():
 class TestDataSchema:
     def test_train_has_target_column(self, train_df, params):
         target = params["data"]["target_column"]
-        assert (
-            target in train_df.columns
-        ), f"Columna target '{target}' no encontrada en train"
+        assert target in train_df.columns, f"Columna target '{target}' no encontrada en train"
 
     def test_test_has_target_column(self, test_df, params):
         target = params["data"]["target_column"]
@@ -122,6 +120,4 @@ class TestFeatureEngineering:
             "target",
         ]
         for key in required_keys:
-            assert (
-                key in feature_info
-            ), f"Key '{key}' no encontrada en feature_names.json"
+            assert key in feature_info, f"Key '{key}' no encontrada en feature_names.json"

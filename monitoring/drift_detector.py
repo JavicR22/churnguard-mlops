@@ -166,16 +166,12 @@ def _extract_summary(report_dict: dict, html_path: str) -> dict:
 if __name__ == "__main__":
     import sys
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     result = run_drift_detection()
     print("\n" + "=" * 50)
     print("RESUMEN DE DRIFT:")
     print(f"  Dataset drift: {result['dataset_drift']}")
-    print(
-        f"  Features con drift: {result['drifted_features']}/{result['total_features']}"
-    )
+    print(f"  Features con drift: {result['drifted_features']}/{result['total_features']}")
     print(f"  Drift share: {result['drift_share']:.2%}")
     print(f"  Reporte: {result['report_path']}")
     print("=" * 50)

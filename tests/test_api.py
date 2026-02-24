@@ -145,9 +145,7 @@ class TestModelInfoEndpoint:
 class TestPredictEndpoint:
     def test_returns_200_with_valid_payload(self, client):
         res = client.post("/predict", json=_VALID, headers=_AUTH)
-        assert (
-            res.status_code == 200
-        ), f"Status inesperado: {res.status_code} — {res.text}"
+        assert res.status_code == 200, f"Status inesperado: {res.status_code} — {res.text}"
 
     def test_response_has_required_fields(self, client):
         data = client.post("/predict", json=_VALID, headers=_AUTH).json()
@@ -237,9 +235,7 @@ class TestBatchPredictEndpoint:
     def test_risk_counts_sum_to_total(self, client):
         payload = {"customers": [_VALID, _LOW_RISK]}
         data = client.post("/predict/batch", json=payload, headers=_AUTH).json()
-        total = (
-            data["high_risk_count"] + data["medium_risk_count"] + data["low_risk_count"]
-        )
+        total = data["high_risk_count"] + data["medium_risk_count"] + data["low_risk_count"]
         assert total == data["total"]
 
     def test_processing_time_is_positive(self, client):

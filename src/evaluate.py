@@ -83,9 +83,7 @@ def evaluate(pipeline, X_test, y_test, params: dict) -> dict:
     log.info("=" * 50)
 
     log.info("\nReporte detallado:")
-    log.info(
-        "\n" + classification_report(y_test, y_pred, target_names=["No Churn", "Churn"])
-    )
+    log.info("\n" + classification_report(y_test, y_pred, target_names=["No Churn", "Churn"]))
 
     return metrics, y_pred, y_proba
 
@@ -96,9 +94,7 @@ def save_confusion_matrix(y_test, y_pred) -> None:
 
     fig, ax = plt.subplots(figsize=(8, 6))
     cm = confusion_matrix(y_test, y_pred)
-    disp = ConfusionMatrixDisplay(
-        confusion_matrix=cm, display_labels=["No Churn", "Churn"]
-    )
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["No Churn", "Churn"])
     disp.plot(ax=ax, cmap="Blues", colorbar=False)
     ax.set_title("Confusion Matrix — churnguard-mlops", fontsize=14, fontweight="bold")
 
@@ -193,9 +189,7 @@ def main():
             )
         log.info("✅ evaluate.py completado — modelo listo para producción")
     else:
-        log.error(
-            "❌ El modelo no cumple los thresholds mínimos. No se promovió a Production."
-        )
+        log.error("❌ El modelo no cumple los thresholds mínimos. No se promovió a Production.")
         sys.exit(1)
 
 

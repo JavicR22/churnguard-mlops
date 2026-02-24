@@ -70,16 +70,12 @@ class TestModelArtifacts:
 
     def test_model_has_predict_method(self, pipeline):
         assert hasattr(pipeline, "predict"), "El modelo no tiene método predict"
-        assert hasattr(
-            pipeline, "predict_proba"
-        ), "El modelo no tiene método predict_proba"
+        assert hasattr(pipeline, "predict_proba"), "El modelo no tiene método predict_proba"
 
     def test_model_is_sklearn_pipeline(self, pipeline):
         from sklearn.pipeline import Pipeline
 
-        assert isinstance(
-            pipeline, Pipeline
-        ), f"Se esperaba Pipeline, se obtuvo {type(pipeline)}"
+        assert isinstance(pipeline, Pipeline), f"Se esperaba Pipeline, se obtuvo {type(pipeline)}"
 
     def test_metrics_file_exists(self):
         assert (
@@ -95,9 +91,7 @@ class TestModelArtifacts:
             "test_samples",
         ]
         for key in required:
-            assert (
-                key in saved_metrics
-            ), f"Métrica '{key}' no encontrada en metrics.json"
+            assert key in saved_metrics, f"Métrica '{key}' no encontrada en metrics.json"
 
     def test_feature_names_json_exists(self):
         assert (DATA_PROCESSED / "feature_names.json").exists()
@@ -124,9 +118,7 @@ class TestModelQuality:
         y_pred = pipeline.predict(X)
         recall = recall_score(y, y_pred)
         threshold = params["thresholds"]["min_recall"]
-        assert (
-            recall >= threshold
-        ), f"Recall {recall:.4f} < threshold mínimo {threshold}"
+        assert recall >= threshold, f"Recall {recall:.4f} < threshold mínimo {threshold}"
 
     def test_model_precision_positive(self, pipeline, test_data):
         X, y = test_data
@@ -144,9 +136,7 @@ class TestModelQuality:
         X, _ = test_data
         y_pred = pipeline.predict(X)
         unique = set(np.unique(y_pred))
-        assert unique.issubset(
-            {0, 1}
-        ), f"Predicciones deben ser binarias, encontrado: {unique}"
+        assert unique.issubset({0, 1}), f"Predicciones deben ser binarias, encontrado: {unique}"
 
     def test_predict_proba_sums_to_one(self, pipeline, test_data):
         X, _ = test_data

@@ -71,15 +71,11 @@ def build_preprocessor(params: dict) -> ColumnTransformer:
         f for f in feature_info["numeric_features"] if f in feature_info["all_features"]
     ]
     categorical_features = [
-        f
-        for f in feature_info["categorical_features"]
-        if f in feature_info["all_features"]
+        f for f in feature_info["categorical_features"] if f in feature_info["all_features"]
     ]
 
     numeric_transformer = StandardScaler()
-    categorical_transformer = OneHotEncoder(
-        handle_unknown="ignore", sparse_output=False
-    )
+    categorical_transformer = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
 
     preprocessor = ColumnTransformer(
         transformers=[
@@ -124,9 +120,7 @@ def get_models(params: dict) -> dict:
     }
 
 
-def train_and_log(
-    model_name: str, model, preprocessor, X_train, y_train, params: dict
-) -> tuple:
+def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params: dict) -> tuple:
     """
     Entrena un modelo y loggea todo en MLflow:
     - Parámetros del modelo
@@ -252,9 +246,7 @@ def main():
         )
         sys.exit(1)
 
-    register_best_model(
-        best_result["run_id"], best_model_name, pipelines[best_model_name]
-    )
+    register_best_model(best_result["run_id"], best_model_name, pipelines[best_model_name])
     log.info("✅ train.py completado exitosamente")
 
 

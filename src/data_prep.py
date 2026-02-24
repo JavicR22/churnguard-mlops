@@ -135,9 +135,7 @@ def split_and_save(df: pd.DataFrame, params: dict) -> None:
     )
 
     log.info(f"Train: {X_train.shape[0]} muestras | Test: {X_test.shape[0]} muestras")
-    log.info(
-        f"Churn en train: {y_train.mean():.2%} | Churn en test: {y_test.mean():.2%}"
-    )
+    log.info(f"Churn en train: {y_train.mean():.2%} | Churn en test: {y_test.mean():.2%}")
 
     # Guardar como parquet (más eficiente que CSV para ML)
     DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
