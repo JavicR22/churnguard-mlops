@@ -6,7 +6,7 @@ Se ejecutan con TestClient de Starlette (sin levantar el servidor).
 """
 
 import os
-from pathlib import Path
+
 
 import pytest
 from fastapi.testclient import TestClient
@@ -199,7 +199,6 @@ class TestPredictEndpoint:
     def test_wrong_api_key_returns_403_in_strict_mode(self, client, monkeypatch):
         """Si API_KEY no es el default dev, una clave incorrecta debe retornar 403."""
         monkeypatch.setenv("API_KEY", "strict-key-123")
-        import importlib
         import api.main as main_mod
         # Solo verificamos que la función de auth existe y está configurada
         assert hasattr(main_mod, "verify_api_key")

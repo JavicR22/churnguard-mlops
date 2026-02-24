@@ -14,7 +14,6 @@ from pathlib import Path
 import joblib
 import matplotlib.pyplot as plt
 import mlflow
-import numpy as np
 import pandas as pd
 import yaml
 from sklearn.metrics import (
@@ -75,13 +74,13 @@ def evaluate(pipeline, X_test, y_test, params: dict) -> dict:
         "churn_rate": float(y_test.mean()),
     }
 
-    log.info("\n" + "="*50)
+    log.info("\n" + "=" * 50)
     log.info("MÉTRICAS EN TEST SET:")
     log.info(f"  AUC:       {metrics['test_auc']:.4f}")
     log.info(f"  F1:        {metrics['test_f1']:.4f}")
     log.info(f"  Precision: {metrics['test_precision']:.4f}")
     log.info(f"  Recall:    {metrics['test_recall']:.4f}")
-    log.info("="*50)
+    log.info("=" * 50)
 
     log.info("\nReporte detallado:")
     log.info("\n" + classification_report(y_test, y_pred, target_names=["No Churn", "Churn"]))

@@ -18,7 +18,6 @@ from typing import Optional
 import joblib
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.responses import HTMLResponse, JSONResponse
