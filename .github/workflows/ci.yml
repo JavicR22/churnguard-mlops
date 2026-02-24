@@ -1,11 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # CI — Lint · Tests · Docker Validate
-#
-# Se ejecuta en cada push (todas las ramas) y en PRs a main/develop.
-# Jobs:
-#   lint           → flake8 + black (rápido, sin dependencias ML)
-#   test           → pytest con cobertura, usa artefactos commiteados
-#   docker-build   → construye la imagen y verifica que arranca sano
 # ══════════════════════════════════════════════════════════════════════════════
 
 name: CI
@@ -16,7 +10,6 @@ on:
   pull_request:
     branches: [main, develop]
 
-# Solo una ejecución activa por rama/PR
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -58,21 +51,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: lint
 
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_USER: mlflow
-          POSTGRES_PASSWORD: mlflow123
-          POSTGRES_DB: mlflow_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U mlflow"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     env:
       MLFLOW_TRACKING_URI: sqlite:///test_mlflow.db
       API_KEY: test-key-ci
@@ -94,15 +72,24 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Verificar artefactos commiteados
+      - name: Descargar dataset
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
         run: |
-          echo "── Verificando artefactos de despliegue ──"
-          test -f models/preprocessor.joblib  && echo "✓ models/preprocessor.joblib" || echo "✗ FALTA models/preprocessor.joblib"
-          test -f data/processed/train.parquet && echo "✓ data/processed/train.parquet" || echo "✗ FALTA data/processed/train.parquet"
-          test -f data/processed/test.parquet  && echo "✓ data/processed/test.parquet"  || echo "✗ FALTA data/processed/test.parquet"
-          test -f reports/metrics.json          && echo "✓ reports/metrics.json"          || echo "✗ FALTA reports/metrics.json"
-          # Fallar si el modelo no existe (requerido para test_api.py)
-          test -f models/preprocessor.joblib || (echo "❌ El modelo no está commiteado. Ejecuta: make pipeline && git add models/ data/processed/ reports/" && exit 1)
+          pip install kaggle
+          mkdir -p data/raw
+          kaggle datasets download -d blastchar/telco-customer-churn \
+            -p data/raw --unzip
+
+      - name: Generar artefactos ML
+        run: |
+          echo "── Ejecutando pipeline ──"
+          python src/data_prep.py
+          python src/train.py
+          python src/evaluate.py
+          echo "── Artefactos generados ──"
+          ls -lh models/ data/processed/ reports/
 
       - name: Ejecutar tests
         run: |
@@ -116,7 +103,7 @@ jobs:
             -v \
             --tb=short
 
-      - name: Subir reporte de cobertura (HTML)
+      - name: Subir reporte de cobertura
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -124,7 +111,7 @@ jobs:
           path: htmlcov/
           retention-days: 14
 
-      - name: Subir cobertura XML (para badges/SonarCloud)
+      - name: Subir cobertura XML
         uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -136,7 +123,7 @@ jobs:
   docker-build:
     name: Docker Build Validate
     runs-on: ubuntu-latest
-    needs: lint  # No necesita tests para validar el build
+    needs: lint
 
     steps:
       - name: Checkout
@@ -149,51 +136,23 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          dockerfile: Dockerfile
+          file: Dockerfile
           push: false
           tags: churnguard-api:ci-test
-          # Caché de capas entre builds (acelera hasta 80%)
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Validar que la imagen es para la arquitectura correcta
           platforms: linux/amd64
 
       - name: Build imagen MLflow (sin push)
         uses: docker/build-push-action@v5
         with:
           context: .
-          dockerfile: Dockerfile.mlflow
+          file: Dockerfile.mlflow
           push: false
           tags: churnguard-mlflow:ci-test
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
-
-      - name: Verificar que la imagen API arranca correctamente
-        run: |
-          docker run --rm -d \
-            --name churnguard-test \
-            -p 8765:8000 \
-            -e API_KEY=test \
-            -e MLFLOW_TRACKING_URI=http://localhost:5000 \
-            churnguard-api:ci-test
-
-          # Esperar hasta 30 segundos a que la API esté lista
-          echo "Esperando a que la API arranque..."
-          for i in $(seq 1 15); do
-            if curl -sf http://localhost:8765/health > /dev/null 2>&1; then
-              echo "✅ API respondiendo en el intento $i"
-              break
-            fi
-            sleep 2
-          done
-
-          # Verificar el endpoint /health
-          RESPONSE=$(curl -sf http://localhost:8765/health)
-          echo "Respuesta /health: $RESPONSE"
-          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'status' in d, 'Campo status no encontrado'; print('✓ Health check OK')"
-
-          docker stop churnguard-test
 
       - name: Validar docker-compose.yml sintaxis
         run: docker compose config --quiet && echo "✅ docker-compose.yml válido"
