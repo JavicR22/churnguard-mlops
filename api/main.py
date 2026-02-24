@@ -18,10 +18,9 @@ from typing import Optional
 import joblib
 import mlflow
 import mlflow.sklearn
-import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Security
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import APIKeyHeader
 
 from api.schemas import (
@@ -71,10 +70,11 @@ _state: dict = {
     "stage": "unknown",
     "source": "none",
     "loaded_at": None,
-    "mean_monthly": 64.76,  # fallback — Telco dataset average
+    "mean_monthly": 64.76,
     "feature_info": None,
     "start_time": time.time(),
 }
+
 
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 @asynccontextmanager
@@ -84,6 +84,7 @@ async def lifespan(app: FastAPI):
     _load_model()
     log.info("✅ API lista.")
     yield
+
 
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -98,6 +99,7 @@ app = FastAPI(
 # ── Auth ──────────────────────────────────────────────────────────────────────
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+
 async def verify_api_key(key: Optional[str] = Security(_api_key_header)):
     """Valida el API key. En modo dev (key por defecto) no se exige."""
     if API_KEY_VALUE == "dev-key-change-in-production":
@@ -105,6 +107,7 @@ async def verify_api_key(key: Optional[str] = Security(_api_key_header)):
     if not key or key != API_KEY_VALUE:
         raise HTTPException(status_code=403, detail="API key inválido o ausente.")
     return key
+
 
 def _load_feature_info():
     path = DATA_PROCESSED / "feature_names.json"
@@ -114,6 +117,7 @@ def _load_feature_info():
         log.info("feature_names.json cargado.")
     else:
         log.warning("feature_names.json no encontrado — usando defaults.")
+
 
 def _load_mean_monthly():
     path = DATA_PROCESSED / "train.parquet"
@@ -127,6 +131,7 @@ def _load_mean_monthly():
     else:
         log.warning(f"train.parquet no encontrado — usando mean_monthly={_state['mean_monthly']:.2f}")
 
+
 def _load_model():
     # 1. Intentar MLflow Registry
     try:
@@ -134,7 +139,6 @@ def _load_model():
         model_uri = f"models:/{MODEL_NAME}/{MODEL_STAGE}"
         pipeline = mlflow.sklearn.load_model(model_uri)
         client = mlflow.MlflowClient()
-        # search_model_versions es la API moderna (get_latest_versions deprecado en 2.9+)
         versions = client.search_model_versions(
             f"name='{MODEL_NAME}'", max_results=1, order_by=["version_number DESC"]
         )
@@ -156,6 +160,7 @@ def _load_model():
 
     _state["loaded_at"] = datetime.utcnow().isoformat()
 
+
 # ── Feature engineering ───────────────────────────────────────────────────────
 def _build_features(customer: CustomerFeatures) -> pd.DataFrame:
     """Reproduce el feature engineering de data_prep.py para la inferencia."""
@@ -169,12 +174,14 @@ def _build_features(customer: CustomerFeatures) -> pd.DataFrame:
 
     return pd.DataFrame([d])
 
+
 def _compute_risk(probability: float) -> RiskLevel:
     if probability < 0.35:
         return RiskLevel.LOW
     if probability < 0.60:
         return RiskLevel.MEDIUM
     return RiskLevel.HIGH
+
 
 def _single_predict(customer: CustomerFeatures) -> PredictionResponse:
     pipeline = _state["pipeline"]
@@ -196,12 +203,12 @@ def _single_predict(customer: CustomerFeatures) -> PredictionResponse:
         timestamp=datetime.utcnow().isoformat(),
     )
 
-# ── Endpoints: público ────────────────────────────────────────────────────────
-from fastapi.responses import FileResponse
 
+# ── Endpoints: público ────────────────────────────────────────────────────────
 @app.get("/")
 def dashboard():
     return FileResponse("api/templates/dashboard.html")
+
 
 @app.get("/health", response_model=HealthResponse, tags=["Status"])
 async def health():
@@ -216,14 +223,19 @@ async def health():
         timestamp=datetime.utcnow().isoformat(),
     )
 
+
 @app.get("/metrics", response_model=MetricsResponse, tags=["Status"])
 async def get_metrics():
     path = REPORTS_DIR / "metrics.json"
     if not path.exists():
-        raise HTTPException(status_code=404, detail="metrics.json no encontrado. Ejecuta: dvc repro evaluate")
+        raise HTTPException(
+            status_code=404,
+            detail="metrics.json no encontrado. Ejecuta: dvc repro evaluate",
+        )
     with open(path) as f:
         data = json.load(f)
     return MetricsResponse(**data)
+
 
 @app.get("/model/info", response_model=ModelInfoResponse, tags=["Status"])
 async def model_info():
@@ -240,6 +252,7 @@ async def model_info():
         loaded_at=_state.get("loaded_at") or datetime.utcnow().isoformat(),
     )
 
+
 # ── Endpoints: predicción ─────────────────────────────────────────────────────
 @app.post("/predict", response_model=PredictionResponse, tags=["Predicción"])
 async def predict(
@@ -247,6 +260,7 @@ async def predict(
     _key: str = Depends(verify_api_key),
 ):
     return _single_predict(customer)
+
 
 @app.post("/predict/batch", response_model=BatchPredictionResponse, tags=["Predicción"])
 async def predict_batch(
@@ -270,6 +284,7 @@ async def predict_batch(
         processing_time_ms=round(elapsed_ms, 2),
     )
 
+
 # ── Endpoints: monitoreo ──────────────────────────────────────────────────────
 @app.get("/monitoring/drift", tags=["Monitoreo"])
 async def get_drift_report():
@@ -281,6 +296,7 @@ async def get_drift_report():
         )
     with open(report_path) as f:
         return JSONResponse(content=json.load(f))
+
 
 @app.post("/monitoring/run", response_model=DriftSummary, tags=["Monitoreo"])
 async def run_drift(
@@ -299,4 +315,3 @@ async def run_drift(
     except Exception as e:
         log.error(f"Error en drift detection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
