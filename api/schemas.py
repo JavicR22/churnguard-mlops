@@ -37,7 +37,9 @@ class CustomerFeatures(BaseModel):
 
     # ── Demográficos ─────────────────────────────────────────────────────────
     gender: str = Field(default="Male", description="Male o Female")
-    SeniorCitizen: int = Field(default=0, ge=0, le=1, description="1 si es senior, 0 si no")
+    SeniorCitizen: int = Field(
+        default=0, ge=0, le=1, description="1 si es senior, 0 si no"
+    )
     Partner: str = Field(default="No", description="Yes o No")
     Dependents: str = Field(default="No", description="Yes o No")
 
@@ -45,12 +47,18 @@ class CustomerFeatures(BaseModel):
     PhoneService: str = Field(default="Yes", description="Yes o No")
     MultipleLines: str = Field(default="No", description="Yes, No, No phone service")
     InternetService: str = Field(..., description="DSL, Fiber optic, No")
-    OnlineSecurity: str = Field(default="No", description="Yes, No, No internet service")
+    OnlineSecurity: str = Field(
+        default="No", description="Yes, No, No internet service"
+    )
     OnlineBackup: str = Field(default="No", description="Yes, No, No internet service")
-    DeviceProtection: str = Field(default="No", description="Yes, No, No internet service")
+    DeviceProtection: str = Field(
+        default="No", description="Yes, No, No internet service"
+    )
     TechSupport: str = Field(default="No", description="Yes, No, No internet service")
     StreamingTV: str = Field(default="No", description="Yes, No, No internet service")
-    StreamingMovies: str = Field(default="No", description="Yes, No, No internet service")
+    StreamingMovies: str = Field(
+        default="No", description="Yes, No, No internet service"
+    )
 
     # ── Contrato ─────────────────────────────────────────────────────────────
     Contract: str = Field(..., description="Month-to-month, One year, Two year")
@@ -116,29 +124,31 @@ class CustomerFeatures(BaseModel):
             raise ValueError(f"El campo debe ser uno de: {_VALID_ADDONS}")
         return v
 
-    model_config = {"json_schema_extra": {
-        "example": {
-            "tenure": 24,
-            "MonthlyCharges": 65.5,
-            "TotalCharges": 1572.0,
-            "gender": "Male",
-            "SeniorCitizen": 0,
-            "Partner": "No",
-            "Dependents": "No",
-            "PhoneService": "Yes",
-            "MultipleLines": "No",
-            "InternetService": "Fiber optic",
-            "OnlineSecurity": "No",
-            "OnlineBackup": "No",
-            "DeviceProtection": "No",
-            "TechSupport": "No",
-            "StreamingTV": "No",
-            "StreamingMovies": "No",
-            "Contract": "Month-to-month",
-            "PaperlessBilling": "Yes",
-            "PaymentMethod": "Electronic check",
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "tenure": 24,
+                "MonthlyCharges": 65.5,
+                "TotalCharges": 1572.0,
+                "gender": "Male",
+                "SeniorCitizen": 0,
+                "Partner": "No",
+                "Dependents": "No",
+                "PhoneService": "Yes",
+                "MultipleLines": "No",
+                "InternetService": "Fiber optic",
+                "OnlineSecurity": "No",
+                "OnlineBackup": "No",
+                "DeviceProtection": "No",
+                "TechSupport": "No",
+                "StreamingTV": "No",
+                "StreamingMovies": "No",
+                "Contract": "Month-to-month",
+                "PaperlessBilling": "Yes",
+                "PaymentMethod": "Electronic check",
+            }
         }
-    }}
+    }
 
 
 class PredictionResponse(BaseModel):

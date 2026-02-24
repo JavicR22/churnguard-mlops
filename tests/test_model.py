@@ -61,30 +61,43 @@ def saved_metrics():
 # ── TestModelArtifacts ────────────────────────────────────────────────────────
 class TestModelArtifacts:
     def test_model_file_exists(self):
-        assert (MODELS_DIR / "preprocessor.joblib").exists(), (
-            "El archivo del modelo no existe. Ejecuta: dvc repro train"
-        )
+        assert (
+            MODELS_DIR / "preprocessor.joblib"
+        ).exists(), "El archivo del modelo no existe. Ejecuta: dvc repro train"
 
     def test_model_loads_without_error(self, pipeline):
         assert pipeline is not None
 
     def test_model_has_predict_method(self, pipeline):
         assert hasattr(pipeline, "predict"), "El modelo no tiene método predict"
-        assert hasattr(pipeline, "predict_proba"), "El modelo no tiene método predict_proba"
+        assert hasattr(
+            pipeline, "predict_proba"
+        ), "El modelo no tiene método predict_proba"
 
     def test_model_is_sklearn_pipeline(self, pipeline):
         from sklearn.pipeline import Pipeline
-        assert isinstance(pipeline, Pipeline), f"Se esperaba Pipeline, se obtuvo {type(pipeline)}"
+
+        assert isinstance(
+            pipeline, Pipeline
+        ), f"Se esperaba Pipeline, se obtuvo {type(pipeline)}"
 
     def test_metrics_file_exists(self):
-        assert (REPORTS_DIR / "metrics.json").exists(), (
-            "metrics.json no existe. Ejecuta: dvc repro evaluate"
-        )
+        assert (
+            REPORTS_DIR / "metrics.json"
+        ).exists(), "metrics.json no existe. Ejecuta: dvc repro evaluate"
 
     def test_metrics_has_required_keys(self, saved_metrics):
-        required = ["test_auc", "test_f1", "test_precision", "test_recall", "test_samples"]
+        required = [
+            "test_auc",
+            "test_f1",
+            "test_precision",
+            "test_recall",
+            "test_samples",
+        ]
         for key in required:
-            assert key in saved_metrics, f"Métrica '{key}' no encontrada en metrics.json"
+            assert (
+                key in saved_metrics
+            ), f"Métrica '{key}' no encontrada en metrics.json"
 
     def test_feature_names_json_exists(self):
         assert (DATA_PROCESSED / "feature_names.json").exists()
@@ -111,7 +124,9 @@ class TestModelQuality:
         y_pred = pipeline.predict(X)
         recall = recall_score(y, y_pred)
         threshold = params["thresholds"]["min_recall"]
-        assert recall >= threshold, f"Recall {recall:.4f} < threshold mínimo {threshold}"
+        assert (
+            recall >= threshold
+        ), f"Recall {recall:.4f} < threshold mínimo {threshold}"
 
     def test_model_precision_positive(self, pipeline, test_data):
         X, y = test_data
@@ -129,7 +144,9 @@ class TestModelQuality:
         X, _ = test_data
         y_pred = pipeline.predict(X)
         unique = set(np.unique(y_pred))
-        assert unique.issubset({0, 1}), f"Predicciones deben ser binarias, encontrado: {unique}"
+        assert unique.issubset(
+            {0, 1}
+        ), f"Predicciones deben ser binarias, encontrado: {unique}"
 
     def test_predict_proba_sums_to_one(self, pipeline, test_data):
         X, _ = test_data
@@ -167,6 +184,6 @@ class TestModelQuality:
         y_proba = pipeline.predict_proba(X)[:, 1]
         computed_auc = roc_auc_score(y, y_proba)
         saved_auc = saved_metrics["test_auc"]
-        assert abs(computed_auc - saved_auc) < 0.01, (
-            f"AUC calculado ({computed_auc:.4f}) difiere del guardado ({saved_auc:.4f})"
-        )
+        assert (
+            abs(computed_auc - saved_auc) < 0.01
+        ), f"AUC calculado ({computed_auc:.4f}) difiere del guardado ({saved_auc:.4f})"

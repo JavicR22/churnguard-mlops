@@ -64,6 +64,7 @@ _LOW_RISK = {
 @pytest.fixture(scope="module")
 def client():
     from api.main import app
+
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
 
@@ -76,7 +77,13 @@ class TestHealthEndpoint:
 
     def test_has_required_fields(self, client):
         data = client.get("/health").json()
-        for field in ("status", "model_loaded", "model_version", "model_stage", "uptime_seconds"):
+        for field in (
+            "status",
+            "model_loaded",
+            "model_version",
+            "model_stage",
+            "uptime_seconds",
+        ):
             assert field in data, f"Campo '{field}' ausente en /health"
 
     def test_status_is_valid(self, client):
@@ -138,11 +145,19 @@ class TestModelInfoEndpoint:
 class TestPredictEndpoint:
     def test_returns_200_with_valid_payload(self, client):
         res = client.post("/predict", json=_VALID, headers=_AUTH)
-        assert res.status_code == 200, f"Status inesperado: {res.status_code} — {res.text}"
+        assert (
+            res.status_code == 200
+        ), f"Status inesperado: {res.status_code} — {res.text}"
 
     def test_response_has_required_fields(self, client):
         data = client.post("/predict", json=_VALID, headers=_AUTH).json()
-        for field in ("prediction_id", "churn_probability", "churn_prediction", "risk_level", "model_version"):
+        for field in (
+            "prediction_id",
+            "churn_probability",
+            "churn_prediction",
+            "risk_level",
+            "model_version",
+        ):
             assert field in data, f"Campo '{field}' ausente"
 
     def test_probability_in_range(self, client):
@@ -165,9 +180,10 @@ class TestPredictEndpoint:
 
     def test_low_risk_customer_is_low_or_medium(self, client):
         data = client.post("/predict", json=_LOW_RISK, headers=_AUTH).json()
-        assert data["risk_level"] in ("LOW", "MEDIUM"), (
-            f"Cliente estable esperado LOW/MEDIUM, obtuvo: {data['risk_level']}"
-        )
+        assert data["risk_level"] in (
+            "LOW",
+            "MEDIUM",
+        ), f"Cliente estable esperado LOW/MEDIUM, obtuvo: {data['risk_level']}"
 
     def test_invalid_contract_returns_422(self, client):
         bad = {**_VALID, "Contract": "Weekly"}
@@ -200,6 +216,7 @@ class TestPredictEndpoint:
         """Si API_KEY no es el default dev, una clave incorrecta debe retornar 403."""
         monkeypatch.setenv("API_KEY", "strict-key-123")
         import api.main as main_mod
+
         # Solo verificamos que la función de auth existe y está configurada
         assert hasattr(main_mod, "verify_api_key")
 
@@ -220,7 +237,9 @@ class TestBatchPredictEndpoint:
     def test_risk_counts_sum_to_total(self, client):
         payload = {"customers": [_VALID, _LOW_RISK]}
         data = client.post("/predict/batch", json=payload, headers=_AUTH).json()
-        total = data["high_risk_count"] + data["medium_risk_count"] + data["low_risk_count"]
+        total = (
+            data["high_risk_count"] + data["medium_risk_count"] + data["low_risk_count"]
+        )
         assert total == data["total"]
 
     def test_processing_time_is_positive(self, client):

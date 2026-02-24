@@ -90,12 +90,20 @@ def feature_engineering(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
     # Feature: número de servicios contratados
     servicios = [
-        "PhoneService", "MultipleLines", "InternetService",
-        "OnlineSecurity", "OnlineBackup", "DeviceProtection",
-        "TechSupport", "StreamingTV", "StreamingMovies",
+        "PhoneService",
+        "MultipleLines",
+        "InternetService",
+        "OnlineSecurity",
+        "OnlineBackup",
+        "DeviceProtection",
+        "TechSupport",
+        "StreamingTV",
+        "StreamingMovies",
     ]
     df["num_services"] = df[servicios].apply(
-        lambda row: sum(1 for v in row if v not in ["No", "No internet service", "No phone service"]),
+        lambda row: sum(
+            1 for v in row if v not in ["No", "No internet service", "No phone service"]
+        ),
         axis=1,
     )
 
@@ -119,14 +127,17 @@ def split_and_save(df: pd.DataFrame, params: dict) -> None:
     y = df[target]
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+        X,
+        y,
         test_size=test_size,
         random_state=random_state,
         stratify=y,  # Mantener proporción de churn en ambos splits
     )
 
     log.info(f"Train: {X_train.shape[0]} muestras | Test: {X_test.shape[0]} muestras")
-    log.info(f"Churn en train: {y_train.mean():.2%} | Churn en test: {y_test.mean():.2%}")
+    log.info(
+        f"Churn en train: {y_train.mean():.2%} | Churn en test: {y_test.mean():.2%}"
+    )
 
     # Guardar como parquet (más eficiente que CSV para ML)
     DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
@@ -141,9 +152,8 @@ def split_and_save(df: pd.DataFrame, params: dict) -> None:
 
     # Guardar la lista de features para que el API sepa qué esperar
     feature_info = {
-        "numeric_features": params["features"]["numeric"] + [
-            "avg_monthly_spend", "monthly_charge_ratio", "num_services", "is_long_term"
-        ],
+        "numeric_features": params["features"]["numeric"]
+        + ["avg_monthly_spend", "monthly_charge_ratio", "num_services", "is_long_term"],
         "categorical_features": params["features"]["categorical"],
         "all_features": list(X_train.columns),
         "target": target,

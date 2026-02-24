@@ -67,11 +67,19 @@ def build_preprocessor(params: dict) -> ColumnTransformer:
     with open(DATA_PROCESSED / "feature_names.json") as f:
         feature_info = json.load(f)
 
-    numeric_features = [f for f in feature_info["numeric_features"] if f in feature_info["all_features"]]
-    categorical_features = [f for f in feature_info["categorical_features"] if f in feature_info["all_features"]]
+    numeric_features = [
+        f for f in feature_info["numeric_features"] if f in feature_info["all_features"]
+    ]
+    categorical_features = [
+        f
+        for f in feature_info["categorical_features"]
+        if f in feature_info["all_features"]
+    ]
 
     numeric_transformer = StandardScaler()
-    categorical_transformer = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    categorical_transformer = OneHotEncoder(
+        handle_unknown="ignore", sparse_output=False
+    )
 
     preprocessor = ColumnTransformer(
         transformers=[
@@ -116,7 +124,9 @@ def get_models(params: dict) -> dict:
     }
 
 
-def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params: dict) -> tuple:
+def train_and_log(
+    model_name: str, model, preprocessor, X_train, y_train, params: dict
+) -> tuple:
     """
     Entrena un modelo y loggea todo en MLflow:
     - Parámetros del modelo
@@ -141,10 +151,12 @@ def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params
         model.fit(X_resampled, y_resampled)
 
         # Para el pipeline final, usamos el preprocessor ya fitted
-        final_pipeline = Pipeline([
-            ("preprocessor", preprocessor_only.named_steps["preprocessor"]),
-            ("classifier", model),
-        ])
+        final_pipeline = Pipeline(
+            [
+                ("preprocessor", preprocessor_only.named_steps["preprocessor"]),
+                ("classifier", model),
+            ]
+        )
 
         # Predicciones en training (para referencia, no para evaluar overfitting)
         y_pred = final_pipeline.predict(X_train)
@@ -174,7 +186,9 @@ def train_and_log(model_name: str, model, preprocessor, X_train, y_train, params
             registered_model_name=None,  # Se registra solo el ganador
         )
 
-        log.info(f"  AUC: {metrics['train_auc']:.4f} | F1: {metrics['train_f1']:.4f} | Recall: {metrics['train_recall']:.4f}")
+        log.info(
+            f"  AUC: {metrics['train_auc']:.4f} | F1: {metrics['train_f1']:.4f} | Recall: {metrics['train_recall']:.4f}"
+        )
 
         return run.info.run_id, metrics["train_auc"], final_pipeline
 
@@ -195,8 +209,12 @@ def register_best_model(best_run_id: str, model_name: str, best_pipeline) -> Non
     # Guardar el preprocessor localmente para el API
     joblib.dump(best_pipeline, MODELS_DIR / "preprocessor.joblib")
 
-    log.info(f"✅ Modelo registrado como 'churn-prediction-model' versión {registered_model.version}")
-    log.info("   Stage: None → Staging (promover a Production desde la UI de MLflow o con evaluate.py)")
+    log.info(
+        f"✅ Modelo registrado como 'churn-prediction-model' versión {registered_model.version}"
+    )
+    log.info(
+        "   Stage: None → Staging (promover a Production desde la UI de MLflow o con evaluate.py)"
+    )
 
 
 def main():
@@ -229,10 +247,14 @@ def main():
     # Verificar threshold mínimo
     min_auc = params["thresholds"]["min_auc"]
     if best_result["auc"] < min_auc:
-        log.error(f"❌ El mejor modelo no supera el AUC mínimo de {min_auc}. Revisa los datos y hiperparámetros.")
+        log.error(
+            f"❌ El mejor modelo no supera el AUC mínimo de {min_auc}. Revisa los datos y hiperparámetros."
+        )
         sys.exit(1)
 
-    register_best_model(best_result["run_id"], best_model_name, pipelines[best_model_name])
+    register_best_model(
+        best_result["run_id"], best_model_name, pipelines[best_model_name]
+    )
     log.info("✅ train.py completado exitosamente")
 
 
