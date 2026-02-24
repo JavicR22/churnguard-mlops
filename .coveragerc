@@ -1,0 +1,7 @@
+[run]
+omit =
+    src/data_prep.py
+    src/train.py
+    src/evaluate.py
+    venv/*
+    tests/*

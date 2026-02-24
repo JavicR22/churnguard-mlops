@@ -103,7 +103,6 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
             --cov-fail-under=75 \
-            --omit=src/data_prep.py,src/train.py,src/evaluate.py \
             -v
 
       - name: Subir reporte de cobertura
