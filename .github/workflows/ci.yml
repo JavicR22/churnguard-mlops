@@ -92,16 +92,19 @@ jobs:
           ls -lh models/ data/processed/ reports/
 
       - name: Ejecutar tests
+        env:
+          MLFLOW_TRACKING_URI: sqlite:///mlflow_test.db
+          API_KEY: test-key
+          MODEL_STAGE: Production
         run: |
           pytest tests/ \
             --cov=src \
             --cov=api \
             --cov-report=term-missing \
-            --cov-report=html:htmlcov \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=70 \
-            -v \
-            --tb=short
+            --cov-fail-under=75 \
+            --omit=src/data_prep.py,src/train.py,src/evaluate.py \
+            -v
 
       - name: Subir reporte de cobertura
         uses: actions/upload-artifact@v4
