@@ -323,3 +323,33 @@ async def run_drift(
     except Exception as e:
         log.error(f"Error en drift detection: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/monitoring/run-synthetic", response_model=DriftSummary, tags=["Monitoreo"])
+async def run_drift_synthetic(
+    _key: str = Depends(verify_api_key),
+):
+    """
+    Ejecuta drift detection contra datos sintéticos de producción.
+    Estos datos tienen distribuciones sesgadas para demostrar drift real.
+    """
+    try:
+        from monitoring.drift_detector import run_drift_detection
+
+        synthetic_path = DATA_PROCESSED / "synthetic_production.parquet"
+        if not synthetic_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Datos sintéticos no encontrados. Ejecuta: python generate_synthetic_data.py",
+            )
+
+        MONITORING_DIR.mkdir(parents=True, exist_ok=True)
+        summary = run_drift_detection(
+            reference_path=DATA_PROCESSED / "train.parquet",
+            current_path=synthetic_path,
+            output_dir=MONITORING_DIR,
+        )
+        return summary
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Error en drift detection sintético: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
