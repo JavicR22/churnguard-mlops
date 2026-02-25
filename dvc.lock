@@ -9,8 +9,8 @@ stages:
       size: 977501
     - path: src/data_prep.py
       hash: md5
-      md5: 2ca899806cecea474874e63dfc89f3a4
-      size: 5458
+      md5: 55b9cd30e732051b21f9b43dc4341c8c
+      size: 5502
     params:
       params.yaml:
         data:
@@ -52,3 +52,73 @@ stages:
       hash: md5
       md5: 3f2214e4584e080eb0abd56caefc17f7
       size: 157963
+  train:
+    cmd: python src/train.py
+    deps:
+    - path: data/processed/feature_names.json
+      hash: md5
+      md5: c485a5814d77277ea9aab86234c8b133
+      size: 1193
+    - path: data/processed/train.parquet
+      hash: md5
+      md5: 3f2214e4584e080eb0abd56caefc17f7
+      size: 157963
+    - path: src/train.py
+      hash: md5
+      md5: b468c261baf5577b3d60a2e3e7990104
+      size: 8336
+    params:
+      params.yaml:
+        data:
+          test_size: 0.2
+          random_state: 42
+          target_column: Churn
+        models:
+          logistic_regression:
+            C: 0.1
+            max_iter: 1000
+            random_state: 42
+          random_forest:
+            n_estimators: 200
+            max_depth: 15
+            min_samples_split: 3
+            random_state: 42
+          xgboost:
+            n_estimators: 300
+            max_depth: 5
+            learning_rate: 0.05
+            subsample: 0.9
+            random_state: 42
+    outs:
+    - path: models/preprocessor.joblib
+      hash: md5
+      md5: d12eb6e035532f1ffe623ad8975a1071
+      size: 28073023
+  evaluate:
+    cmd: python src/evaluate.py
+    deps:
+    - path: data/processed/feature_names.json
+      hash: md5
+      md5: c485a5814d77277ea9aab86234c8b133
+      size: 1193
+    - path: data/processed/test.parquet
+      hash: md5
+      md5: 312ffe845f100665116f01c26ed4bd24
+      size: 57448
+    - path: models/preprocessor.joblib
+      hash: md5
+      md5: d12eb6e035532f1ffe623ad8975a1071
+      size: 28073023
+    - path: src/evaluate.py
+      hash: md5
+      md5: 5e520e3a59dc300c361a08051e241afb
+      size: 6150
+    outs:
+    - path: reports/confusion_matrix.png
+      hash: md5
+      md5: bd05b0b50e55676117071e4f9adb4626
+      size: 26659
+    - path: reports/metrics.json
+      hash: md5
+      md5: a6631a26d17919468baf7c0a9e0647b1
+      size: 212
