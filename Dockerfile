@@ -49,6 +49,11 @@ COPY .dvc/         ./.dvc/
 
 # ── Inicializar git y descargar artefactos con DVC ────────────────────────────
 ARG GDRIVE_CREDENTIALS_DATA
+
+# Crear usuario primero
+RUN useradd --create-home --shell /bin/bash --uid 1001 appuser
+
+# Luego el dvc pull con chown al final
 RUN mkdir -p models data/processed reports monitoring/reports \
     && git init \
     && git config user.email "ci@churnguard.com" \
@@ -61,7 +66,8 @@ RUN mkdir -p models data/processed reports monitoring/reports \
         && echo "✅ Artefactos descargados desde Google Drive" ; \
     else \
         echo "⚠ GDRIVE_CREDENTIALS_DATA no configurado — modo degradado" ; \
-    fi
+    fi \
+    && chown -R appuser:appuser /app
 
 # ── Configuración final ───────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh /entrypoint.sh
