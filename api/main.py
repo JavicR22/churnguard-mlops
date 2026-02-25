@@ -151,9 +151,7 @@ def _load_model():
             f"name='{MODEL_NAME}'", max_results=1, order_by=["version_number DESC"]
         )
         version = str(versions[0].version) if versions else "registry"
-        _state.update(
-            pipeline=pipeline, version=version, stage=MODEL_STAGE, source="mlflow"
-        )
+        _state.update(pipeline=pipeline, version=version, stage=MODEL_STAGE, source="mlflow")
         log.info(f"Modelo cargado desde MLflow Registry: v{version} ({MODEL_STAGE})")
         return
     except Exception as e:
@@ -163,9 +161,7 @@ def _load_model():
     local_path = MODELS_DIR / "preprocessor.joblib"
     if local_path.exists():
         pipeline = joblib.load(local_path)
-        _state.update(
-            pipeline=pipeline, version="local", stage="Production", source="local"
-        )
+        _state.update(pipeline=pipeline, version="local", stage="Production", source="local")
         log.info("Modelo cargado desde models/preprocessor.joblib")
     else:
         log.error("❌ No se encontró ningún modelo. La API está degradada.")
