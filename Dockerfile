@@ -43,6 +43,7 @@ COPY api/          ./api/
 COPY src/          ./src/
 COPY monitoring/   ./monitoring/
 COPY params.yaml   .
+COPY .dvc/          ./.dvc/
 
 # ── Artefactos pre-entrenados ─────────────────────────────────────────────────
 # Se incluyen en la imagen para despliegue sin necesidad de DVC pull.

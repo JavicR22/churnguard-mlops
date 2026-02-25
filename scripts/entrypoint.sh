@@ -21,6 +21,29 @@ echo -e "${NC}"
 echo " ChurnGuard API — Customer Churn Prediction Platform"
 echo " ─────────────────────────────────────────────────────"
 
+# ── DVC Pull ──────────────────────────────────────────────────────────────────
+if [ -n "$GDRIVE_CREDENTIALS_DATA" ]; then
+    echo -e " ${BLUE}→${NC} Descargando artefactos desde Google Drive (DVC)..."
+    cd /app
+
+    # Escribir credenciales de service account desde variable de entorno
+    echo "$GDRIVE_CREDENTIALS_DATA" > /tmp/gdrive_credentials.json
+
+    # Configurar DVC para usar las credenciales
+    dvc remote modify gdrive gdrive_service_account_json_file_path /tmp/gdrive_credentials.json 2>/dev/null || true
+
+    # Descargar artefactos
+    if dvc pull --no-run-cache 2>&1; then
+        echo -e " ${GREEN}✓${NC} Artefactos descargados correctamente desde Google Drive"
+    else
+        echo -e " ${YELLOW}⚠${NC}  DVC pull falló — la API iniciará con los artefactos disponibles"
+    fi
+else
+    echo -e " ${YELLOW}⚠${NC}  GDRIVE_CREDENTIALS_DATA no configurado — omitiendo DVC pull"
+fi
+
+echo " ─────────────────────────────────────────────────────"
+
 # ── Verificar artefactos ──────────────────────────────────────────────────────
 MODEL_PATH="/app/models/preprocessor.joblib"
 DATA_PATH="/app/data/processed/train.parquet"
@@ -43,7 +66,6 @@ else
 fi
 
 if [ -f "$METRICS_PATH" ]; then
-    # Mostrar métricas del modelo si están disponibles
     if command -v python3 &> /dev/null; then
         AUC=$(python3 -c "import json; d=json.load(open('$METRICS_PATH')); print(f\"{d['test_auc']:.3f}\")" 2>/dev/null || echo "N/A")
         F1=$(python3 -c "import json; d=json.load(open('$METRICS_PATH')); print(f\"{d['test_f1']:.3f}\")" 2>/dev/null || echo "N/A")
