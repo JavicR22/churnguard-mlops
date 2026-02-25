@@ -8,14 +8,12 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Dependencias del sistema para compilar extensiones C (psycopg2, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Instalar dependencias Python en un directorio aislado
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt
@@ -29,14 +27,12 @@ LABEL org.opencontainers.image.title="ChurnGuard API" \
 
 WORKDIR /app
 
-# Librerías de sistema necesarias en runtime + git para DVC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copiar paquetes Python instalados desde el builder
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
@@ -46,15 +42,13 @@ COPY src/          ./src/
 COPY monitoring/   ./monitoring/
 COPY params.yaml   .
 COPY .dvc/         ./.dvc/
+COPY scripts/entrypoint.sh /entrypoint.sh
 
-# ── Inicializar git y descargar artefactos con DVC ────────────────────────────
+# ── Crear usuario, descargar artefactos y fijar permisos ─────────────────────
 ARG GDRIVE_CREDENTIALS_DATA
 
-# Crear usuario primero
-RUN useradd --create-home --shell /bin/bash --uid 1001 appuser
-
-# Luego el dvc pull con chown al final
-RUN mkdir -p models data/processed reports monitoring/reports \
+RUN useradd --create-home --shell /bin/bash --uid 1001 appuser \
+    && mkdir -p models data/processed reports monitoring/reports \
     && git init \
     && git config user.email "ci@churnguard.com" \
     && git config user.name "ChurnGuard CI" \
@@ -67,13 +61,6 @@ RUN mkdir -p models data/processed reports monitoring/reports \
     else \
         echo "⚠ GDRIVE_CREDENTIALS_DATA no configurado — modo degradado" ; \
     fi \
-    && chown -R appuser:appuser /app
-
-# ── Configuración final ───────────────────────────────────────────────────────
-COPY scripts/entrypoint.sh /entrypoint.sh
-
-# Usuario no-root (seguridad)
-RUN useradd --create-home --shell /bin/bash --uid 1001 appuser \
     && chmod +x /entrypoint.sh \
     && chown -R appuser:appuser /app /entrypoint.sh
 
