@@ -330,6 +330,6 @@ Merge a main ──────────────────────�
 
 ## 👤 Autor
 
-**Javier** — Proyecto de portafolio MLOps
+**Javic Rojas** — Proyecto de portafolio MLOps
 
 [![GitHub](https://img.shields.io/badge/GitHub-JavicR22-181717?logo=github)](https://github.com/JavicR22/churnguard-mlops)
