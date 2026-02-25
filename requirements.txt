@@ -17,6 +17,7 @@ psycopg2-binary==2.9.9
 # DVC
 dvc==3.51.2
 dvc[gdrive]==3.51.2
+pathspec==0.12.1
 
 # Monitoring
 evidently==0.4.30
