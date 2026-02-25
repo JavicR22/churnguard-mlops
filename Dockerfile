@@ -12,6 +12,7 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar dependencias Python en un directorio aislado
@@ -24,14 +25,15 @@ FROM python:3.11-slim AS production
 
 LABEL org.opencontainers.image.title="ChurnGuard API" \
       org.opencontainers.image.description="Customer Churn Prediction Platform" \
-      org.opencontainers.image.source="https://github.com/tu-usuario/churnguard-mlops"
+      org.opencontainers.image.source="https://github.com/JavicR22/churnguard-mlops"
 
 WORKDIR /app
 
-# Solo librerías de sistema necesarias en runtime
+# Librerías de sistema necesarias en runtime + git para DVC
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar paquetes Python instalados desde el builder
@@ -43,34 +45,38 @@ COPY api/          ./api/
 COPY src/          ./src/
 COPY monitoring/   ./monitoring/
 COPY params.yaml   .
-COPY .dvc/          ./.dvc/
+COPY .dvc/         ./.dvc/
 
-# ── Artefactos pre-entrenados ─────────────────────────────────────────────────
-# Se incluyen en la imagen para despliegue sin necesidad de DVC pull.
-# Si no existen localmente, la API arranca en modo degradado (fallback a MLflow).
-# Para regenerarlos: make pipeline
-RUN mkdir -p models data/processed reports monitoring/reports
-
+# ── Inicializar git y descargar artefactos con DVC ────────────────────────────
+ARG GDRIVE_CREDENTIALS_DATA
+RUN mkdir -p models data/processed reports monitoring/reports \
+    && git init \
+    && git config user.email "ci@churnguard.com" \
+    && git config user.name "ChurnGuard CI" \
+    && if [ -n "$GDRIVE_CREDENTIALS_DATA" ]; then \
+        echo "$GDRIVE_CREDENTIALS_DATA" > /tmp/gdrive_creds.json \
+        && dvc remote modify gdrive gdrive_service_account_json_file_path /tmp/gdrive_creds.json \
+        && dvc pull --no-run-cache \
+        && rm /tmp/gdrive_creds.json \
+        && echo "✅ Artefactos descargados desde Google Drive" ; \
+    else \
+        echo "⚠ GDRIVE_CREDENTIALS_DATA no configurado — modo degradado" ; \
+    fi
 
 # ── Configuración final ───────────────────────────────────────────────────────
-# Script de inicio
 COPY scripts/entrypoint.sh /entrypoint.sh
 
 # Usuario no-root (seguridad)
 RUN useradd --create-home --shell /bin/bash --uid 1001 appuser \
-    && mkdir -p monitoring/reports \
     && chmod +x /entrypoint.sh \
     && chown -R appuser:appuser /app /entrypoint.sh
 
 USER appuser
 
-# Puerto de la API
 EXPOSE 8000
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Punto de entrada + comando por defecto
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
