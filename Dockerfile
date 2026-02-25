@@ -11,7 +11,6 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
@@ -30,37 +29,27 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 # ── Código de la aplicación ───────────────────────────────────────────────────
-COPY api/          ./api/
-COPY src/          ./src/
-COPY monitoring/   ./monitoring/
-COPY params.yaml   .
-COPY .dvc/         ./.dvc/
+COPY api/              ./api/
+COPY src/              ./src/
+COPY monitoring/       ./monitoring/
+COPY params.yaml       .
+
+# ── Artefactos del modelo ─────────────────────────────────────────────────────
+COPY models/           ./models/
+COPY data/processed/   ./data/processed/
+COPY reports/          ./reports/
+
+# ── Configuración final ───────────────────────────────────────────────────────
 COPY scripts/entrypoint.sh /entrypoint.sh
 
-# ── Crear usuario, descargar artefactos y fijar permisos ─────────────────────
-ARG GDRIVE_CREDENTIALS_DATA
-
 RUN useradd --create-home --shell /bin/bash --uid 1001 appuser \
-    && mkdir -p models data/processed reports monitoring/reports \
-    && git init \
-    && git config user.email "ci@churnguard.com" \
-    && git config user.name "ChurnGuard CI" \
-    && if [ -n "$GDRIVE_CREDENTIALS_DATA" ]; then \
-        echo "$GDRIVE_CREDENTIALS_DATA" > /tmp/gdrive_creds.json \
-        && dvc remote modify gdrive gdrive_service_account_json_file_path /tmp/gdrive_creds.json \
-        && dvc pull --no-run-cache \
-        && rm /tmp/gdrive_creds.json \
-        && echo "✅ Artefactos descargados desde Google Drive" ; \
-    else \
-        echo "⚠ GDRIVE_CREDENTIALS_DATA no configurado — modo degradado" ; \
-    fi \
+    && mkdir -p monitoring/reports \
     && chmod +x /entrypoint.sh \
     && chown -R appuser:appuser /app /entrypoint.sh
 
